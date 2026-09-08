@@ -1,0 +1,62 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+secrets/
+credentials/
+
+# Node / JS
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+dist/
+build/
+.next/
+.expo/
+coverage/
+
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
+*.aab
+local.properties
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+*.swp
+.cache/
+tmp/
+temp/
+
+# Local databases and clinical exports
+*.db
+*.sqlite
+*.sqlite3
+*.sqlcipher
+exports/
+backups/
+clinical-data/
+patient-data/
+
+# Chat exports / prompt history
+chatgpt-export*
+chat-history*
+prompts-private*
