@@ -1,0 +1,1 @@
+ALTER TABLE `analytic_graphs` ADD `owner_account_id` text;
