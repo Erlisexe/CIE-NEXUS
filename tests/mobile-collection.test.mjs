@@ -119,6 +119,19 @@ test('recuperación de relojes y deshacer conservan la evidencia de captura',asy
   assert.deepEqual(capturedResult(t,d.captures[t.id]).trials,[0]); assert.equal(d.captures[t.id].observations.length,2); f.sql.close();
 });
 
+test('cada ensayo prospectivo conserva timestamp, prompt y criterio vigente sin inferirlos',async()=>{
+  const f=fixture(); const prep=await prepareMobileCollection(f.db,actor,'child-1','a1'); const t=prep.programs[0].targets[0];
+  const capture={targetId:t.id,definition:targetDefinition(t),note:'',opportunities:2,timerStartedAt:null,observations:[
+    {id:randomUUID(),at:'2026-09-01T15:00:01.000Z',value:1,promptLevel:'independent'},
+    {id:randomUUID(),at:'2026-09-01T15:00:02.000Z',value:0,promptLevel:'verbal'},
+  ]};
+  const saved=capturedResult(t,capture);
+  assert.deepEqual(saved.trialDetails.map(item=>item.promptLevel),['independent','verbal']);
+  assert.deepEqual(saved.trialDetails.map(item=>item.at),capture.observations.map(item=>item.at));
+  assert.equal(saved.criterionSnapshot.state,'baseline');
+  f.sql.close();
+});
+
 test('dos reenvíos simultáneos de la misma sesión obtienen un único recibo',async()=>{
   const f=fixture(),p=await payloadFor(f);
   const receipts=await Promise.all([syncMobileCollection(f.db,actor,p),syncMobileCollection(f.db,actor,p)]);

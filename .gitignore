@@ -20,6 +20,14 @@
 # misc
 .DS_Store
 *.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+secrets/
+credentials/
 
 # debug
 npm-debug.log*
@@ -29,6 +37,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -43,3 +52,18 @@ next-env.d.ts
 /mobile/android/
 /mobile/node_modules/
 /mobile/.expo/
+*.apk
+*.aab
+local.properties
+*.db
+*.sqlite
+*.sqlite3
+*.sqlcipher
+/exports/
+/backups/
+/clinical-data/
+/patient-data/
+/chatgpt-export*
+/chat-history*
+/prompts-private*
+/tsconfig.tsbuildinfo

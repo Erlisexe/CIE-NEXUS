@@ -5,13 +5,20 @@ import { analyticGraphs, graphHistory, interventionPrograms, personnelProfiles, 
 import {
   DEFAULT_GRAPH_CONFIG,
   type GraphConfig,
+  type GraphDataSource,
+  type GraphGrouping,
   type GraphPoint,
+  type GraphPeriod,
+  type GraphRateUnit,
   type GraphType,
+  type GraphXAxis,
+  type GraphYAxis,
   type LineDesign,
   type PhaseBoundary,
 } from "../../../lib/graph-types";
+import { redactGraphPointForViewer } from "../../../lib/clinical-data-privacy";
 
-const graphTypes = new Set<GraphType>(["line", "bar", "cumulative"]);
+const graphTypes = new Set<GraphType>(["line", "bar", "stacked-bar", "scatter", "cumulative"]);
 const lineDesigns = new Set<LineDesign>(["simple", "AB", "ABA", "ABAB", "BAB", "multiple-baseline", "multielement", "changing-criterion", "custom"]);
 
 class GraphLinkError extends Error {
@@ -55,9 +62,17 @@ function sanitizePoints(value: unknown): GraphPoint[] {
     return {
       id: textValue(point.id, 80) || crypto.randomUUID(),
       label: textValue(point.label, 80) || String(index + 1),
+      ...(textValue(point.xKey, 180) ? { xKey: textValue(point.xKey, 180) } : {}),
       value: finiteNumber(point.value),
       series: textValue(point.series, 80) || "Datos",
       criterion: finiteNumber(point.criterion),
+      ...(point.criterionProgress && typeof point.criterionProgress === "object" ? { criterionProgress: {
+        met: Math.max(0, Math.round(finiteNumber((point.criterionProgress as Record<string, unknown>).met, 0) || 0)),
+        required: Math.max(1, Math.round(finiteNumber((point.criterionProgress as Record<string, unknown>).required, 1) || 1)),
+        label: textValue((point.criterionProgress as Record<string, unknown>).label, 40),
+      } } : {}),
+      ...(textValue(point.targetId, 80) ? { targetId: textValue(point.targetId, 80) } : {}),
+      ...(textValue(point.stateAtPoint, 40) ? { stateAtPoint: textValue(point.stateAtPoint, 40) } : {}),
       note: textValue(point.note, 600),
       ...(source ? { source: {
         sessionId: textValue(source.sessionId, 80),
@@ -68,6 +83,10 @@ function sanitizePoints(value: unknown): GraphPoint[] {
         opportunities: Math.max(0, Math.round(finiteNumber(source.opportunities, 0) || 0)),
         context: textValue(source.context, 300),
         sessionNotes: textValue(source.sessionNotes, 800),
+        ...(textValue(source.professionalAccountId, 100) ? { professionalAccountId: textValue(source.professionalAccountId, 100) } : {}),
+        ...(textValue(source.professionalName, 160) ? { professionalName: textValue(source.professionalName, 160) } : {}),
+        ...(textValue(source.promptLevel, 60) ? { promptLevel: textValue(source.promptLevel, 60) } : {}),
+        rawDetailAvailable: source.rawDetailAvailable === true,
       } } : {}),
     };
   });
@@ -80,10 +99,14 @@ function sanitizePhases(value: unknown, pointCount: number): PhaseBoundary[] {
     const afterIndex = Math.round(Number(phase.afterIndex));
     return {
       id: textValue(phase.id, 80) || crypto.randomUUID(),
-      afterIndex: Number.isFinite(afterIndex) ? Math.max(1, Math.min(afterIndex, Math.max(1, pointCount - 1))) : 1,
+      afterIndex: Number.isFinite(afterIndex) ? Math.max(1, Math.min(afterIndex, Math.max(1, pointCount))) : 1,
       beforeLabel: textValue(phase.beforeLabel, 80) || "Fase anterior",
       afterLabel: textValue(phase.afterLabel, 80) || "Fase siguiente",
       ...(textValue(phase.boundaryDate, 20) ? { boundaryDate: textValue(phase.boundaryDate, 20) } : {}),
+      ...(textValue(phase.boundaryKey, 180) ? { boundaryKey: textValue(phase.boundaryKey, 180) } : {}),
+      ...(textValue(phase.targetId, 80) ? { targetId: textValue(phase.targetId, 80) } : {}),
+      ...(textValue(phase.targetLabel, 160) ? { targetLabel: textValue(phase.targetLabel, 160) } : {}),
+      origin: phase.origin === "automatic" ? "automatic" as const : "manual" as const,
     };
   }).sort((a, b) => a.afterIndex - b.afterIndex);
 }
@@ -95,7 +118,16 @@ function sanitizeConfig(value: unknown): GraphConfig {
     : {}) as Record<string, unknown>;
   const yMin = finiteNumber(config.yMin, 0) ?? 0;
   const yMax = finiteNumber(config.yMax);
+  const dataSources = new Set<GraphDataSource>(["manual", "sessions", "trials", "abc"]);
+  const periods = new Set<GraphPeriod>(["today", "7d", "30d", "3m", "6m", "all", "custom"]);
+  const xAxes = new Set<GraphXAxis>(["date", "session", "target", "prompt", "therapist"]);
+  const yAxes = new Set<GraphYAxis>(["percentage_correct", "count", "rate", "duration"]);
+  const groupings = new Set<GraphGrouping>(["none", "program", "target", "prompt", "therapist"]);
+  const rateUnits = new Set<GraphRateUnit>(["minute", "hour", "day"]);
+  const filters = config.filters && typeof config.filters === "object" ? config.filters as Record<string, unknown> : {};
+  const stringList = (raw: unknown, max = 100) => Array.isArray(raw) ? raw.map((item) => textValue(item, max)).filter(Boolean).slice(0, 200) : [];
   return {
+    version: config.version === 2 ? 2 : 1,
     yMin,
     yMax: yMax !== null && yMax > yMin ? yMax : null,
     showGrid: config.showGrid !== false,
@@ -105,12 +137,26 @@ function sanitizeConfig(value: unknown): GraphConfig {
     showPoints: config.showPoints !== false,
     showLegend: config.showLegend !== false,
     showValues: config.showValues === true,
-    dataSource: config.dataSource === "sessions" ? "sessions" : "manual",
+    dataSource: dataSources.has(config.dataSource as GraphDataSource) ? config.dataSource as GraphDataSource : "manual",
     sourceTargetIds: Array.isArray(config.sourceTargetIds)
       ? config.sourceTargetIds.map((item) => textValue(item, 80)).filter(Boolean).slice(0, 50)
       : [],
     dateFrom: textValue(config.dateFrom, 20),
     dateTo: textValue(config.dateTo, 20),
+    period: periods.has(config.period as GraphPeriod) ? config.period as GraphPeriod : "30d",
+    xAxis: xAxes.has(config.xAxis as GraphXAxis) ? config.xAxis as GraphXAxis : "date",
+    yAxis: yAxes.has(config.yAxis as GraphYAxis) ? config.yAxis as GraphYAxis : "percentage_correct",
+    grouping: groupings.has(config.grouping as GraphGrouping) ? config.grouping as GraphGrouping : "target",
+    rateUnit: rateUnits.has(config.rateUnit as GraphRateUnit) ? config.rateUnit as GraphRateUnit : "hour",
+    filters: {
+      programIds: stringList(filters.programIds),
+      targetIds: stringList(filters.targetIds),
+      targetStates: stringList(filters.targetStates, 40),
+      therapistIds: stringList(filters.therapistIds),
+    },
+    showCriterion: config.showCriterion !== false,
+    exportMetadata: stringList(config.exportMetadata, 300).slice(0, 20),
+    warnings: stringList(config.warnings, 500).slice(0, 30),
     visualAnalysis: {
       level: textValue(analysis.level, 800),
       trend: textValue(analysis.trend, 800),
@@ -122,6 +168,16 @@ function sanitizeConfig(value: unknown): GraphConfig {
       nextReview: textValue(analysis.nextReview, 40),
     },
   };
+}
+
+function redactStoredGraphForAccount(graph: typeof analyticGraphs.$inferSelect, account: AppAccount) {
+  if (account.role !== "terapeuta") return graph;
+  const parsed = (() => {
+    try { return JSON.parse(graph.points) as unknown; } catch { return []; }
+  })();
+  if (!Array.isArray(parsed)) return graph;
+  const points = parsed.map((point) => redactGraphPointForViewer(point, account));
+  return { ...graph, points: JSON.stringify(points) };
 }
 
 async function canUseGraph(db: Awaited<ReturnType<typeof getDb>>, account: AppAccount, graph: typeof analyticGraphs.$inferSelect) {
@@ -189,7 +245,7 @@ export async function GET(request: Request) {
     const graphs = await db.select().from(analyticGraphs).orderBy(desc(analyticGraphs.updatedAt)).limit(300);
     const visible: typeof graphs = [];
     for (const graph of graphs) if (await canUseGraph(db, account, graph)) visible.push(graph);
-    return Response.json({ graphs: visible });
+    return Response.json({ graphs: visible.map((graph) => redactStoredGraphForAccount(graph, account)) });
   } catch (error) {
     return Response.json({ error: errorMessage(error) }, { status: 500 });
   }

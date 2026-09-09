@@ -76,6 +76,7 @@ export type ClinicalSession = {
     stateAtSession: ClinicalTargetState;
     criterionStatus?: "met" | "not_met" | "insufficient_sample" | "not_evaluated";
     criterionReason?: string;
+    criterionSnapshot?: { state?: ClinicalTargetState; criterion?: { threshold?: number } } | null;
   }>;
 };
 
@@ -122,6 +123,9 @@ function defaultPhases(target: ClinicalTarget, sessions: ClinicalSession[]) {
       beforeLabel: STATE_LABELS[observed[index - 1].state],
       afterLabel: STATE_LABELS[item.state],
       boundaryDate: item.session.sessionDate,
+      targetId: target.id,
+      targetLabel: `${target.code} · ${target.name}`,
+      origin: "automatic",
     } satisfies PhaseBoundary];
   });
 }
@@ -134,8 +138,7 @@ function resolvePhases(phases: PhaseBoundary[], sessions: ClinicalSession[]) {
       : -1;
     const afterIndex = dateIndex > 0 ? dateIndex : Math.max(1, Math.min(phase.afterIndex, sessions.length - 1));
     return { ...phase, afterIndex, boundaryDate: phase.boundaryDate || sessions[afterIndex]?.sessionDate };
-  }).filter((phase, index, all) => all.findIndex((item) => item.afterIndex === phase.afterIndex) === index)
-    .sort((a, b) => a.afterIndex - b.afterIndex);
+  }).sort((a, b) => a.afterIndex - b.afterIndex || a.id.localeCompare(b.id));
 }
 
 export function buildSessionGraph({
@@ -193,7 +196,9 @@ export function buildSessionGraph({
       return {
         id: `cumulative-${program.id}-${item.id}`,
         label: item.isStart ? "Inicio" : dateLabel(item.date),
-        value: item.total,
+        // GraphCanvas accumulates increments. The initial point is the carried
+        // baseline and every later point is only the newly acquired targets.
+        value: item.isStart ? item.total : item.targetIds.length,
         series: "Targets adquiridos",
         criterion: null,
         note: item.isStart ? "Inicio del período representado." : acquired.length ? `Incorporado al repertorio: ${acquired.join(", ")}` : "Sin nuevos dominios; se conserva el total acumulado.",
@@ -246,7 +251,11 @@ export function buildSessionGraph({
       label: dateLabel(session.sessionDate),
       value: recorded ? result!.value : null,
       series: `${target.code} · ${target.name}`,
-      criterion: designType === "changing-criterion" ? targetCriterion(target, state) : null,
+      criterion: config.showCriterion
+        ? typeof result?.criterionSnapshot?.criterion?.threshold === "number"
+          ? result.criterionSnapshot.criterion.threshold
+          : designType === "changing-criterion" ? targetCriterion(target, state) : null
+        : null,
       note: recorded
         ? [STATE_LABELS[state], session.context, result?.note, `${result?.opportunities || 0} oportunidades`, result?.criterionReason, session.notes].filter(Boolean).join(" · ")
         : `Sin dato registrado para este target · ${session.context}`,
@@ -262,8 +271,9 @@ export function buildSessionGraph({
       },
     };
   }));
-  const suggestedPhases = targets[0] ? defaultPhases(targets[0], filteredSessions) : [];
-  const resolvedPhases = resolvePhases(phases?.length ? phases : suggestedPhases, filteredSessions);
+  const suggestedPhases = targets.flatMap((target) => defaultPhases(target, filteredSessions));
+  const manualPhases = (phases || []).filter((phase) => phase.origin !== "automatic" && !phase.id.startsWith("auto-phase-"));
+  const resolvedPhases = resolvePhases([...suggestedPhases, ...manualPhases], filteredSessions);
   return {
     id,
     profileId: program.profileId,

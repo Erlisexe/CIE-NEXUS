@@ -13,6 +13,7 @@ import {
 } from "../../../db/schema";
 import { apiAccountGuard, canAccessChild, hasPermission, visibleProfileIds, type AppAccount } from "../../../lib/access-control";
 import { normalizeGraph } from "../../../lib/graph-types";
+import { aggregateOnlySessionResult, canViewRawClinicalDetail, redactGraphPointForViewer } from "../../../lib/clinical-data-privacy";
 import { buildSessionGraph, type ClinicalMeasurement, type ClinicalSession, type ClinicalTargetState } from "../../../lib/automatic-graphs";
 import { signedProfilePhotoMap } from "../../../lib/profile-photos";
 import {
@@ -135,16 +136,28 @@ function serializeTemplate(template: typeof reportTemplates.$inferSelect) {
   return { ...template, blocks: parsed<ReportBlock[]>(template.blocks, []) };
 }
 
+function redactReportBlocks(blocks: ReportBlock[], account: AppAccount) {
+  if (account.role !== "terapeuta") return blocks;
+  return blocks.map((block) => {
+    if (block.type === "graph") return { ...block, graph: { ...block.graph, points: block.graph.points.map((point) => redactGraphPointForViewer(point, account) as typeof point) } };
+    if (block.type !== "table" || !block.sourceId.startsWith("sessions:")) return block;
+    const hiddenColumns = new Set(block.data.columns.flatMap((column, index) => ["Contexto", "Notas"].includes(column) ? [index] : []));
+    return { ...block, data: { ...block.data, rows: block.data.rows.map((row) => row.map((value, index) => hiddenColumns.has(index) ? "Detalle restringido" : value)) } };
+  });
+}
+
 function serializeReport(
   report: typeof reports.$inferSelect,
   profileName: string,
   photoUrl: string | null = null,
+  account?: AppAccount,
 ) {
   const snapshot = parsed<ReportProfileSnapshot>(report.profileSnapshot, {} as ReportProfileSnapshot);
+  const blocks = parsed<ReportBlock[]>(report.blocks, []);
   return {
     ...report,
     profileName,
-    blocks: parsed<ReportBlock[]>(report.blocks, []),
+    blocks: account ? redactReportBlocks(blocks, account) : blocks,
     profileSnapshot: { ...snapshot, photoUrl },
     sourceSelection: parsed<string[]>(report.sourceSelection, []),
   };
@@ -180,7 +193,7 @@ function programSource(program: typeof interventionPrograms.$inferSelect, target
   };
 }
 
-function sessionSource(program: typeof interventionPrograms.$inferSelect, rows: typeof interventionSessions.$inferSelect[]): ReportSource {
+function sessionSource(account: AppAccount, program: typeof interventionPrograms.$inferSelect, rows: typeof interventionSessions.$inferSelect[]): ReportSource {
   const sessions = rows.filter((session) => session.programId === program.id).slice(0, 10);
   return {
     id: `sessions:${program.id}`,
@@ -189,13 +202,16 @@ function sessionSource(program: typeof interventionPrograms.$inferSelect, rows: 
     detail: `${sessions.length} sesión${sessions.length === 1 ? "" : "es"} disponible${sessions.length === 1 ? "" : "s"}`,
     table: {
       columns: ["Fecha", "Contexto", "Estado", "Notas", "Resultados registrados"],
-      rows: sessions.map((session) => [
+      rows: sessions.map((session) => {
+        const rawDetailAvailable = canViewRawClinicalDetail(account, session.professionalAccountId);
+        return [
         formatDate(session.sessionDate),
-        session.context || "No especificado",
+        rawDetailAvailable ? session.context || "No especificado" : "Detalle restringido",
         session.status,
-        session.notes || "",
+        rawDetailAvailable ? session.notes || "" : "Detalle restringido",
         parsed<unknown[]>(session.results, []).filter((result) => result && typeof result === "object" && (result as Record<string, unknown>).sampled !== false).length,
-      ]),
+      ];
+      }),
     },
   };
 }
@@ -261,7 +277,9 @@ async function reportSources(account: AppAccount, profileId: string) {
       },
       sessions: sessionRows.filter((session) => session.programId === program.id).map((session) => ({
         ...session,
-        results: parsed<ClinicalSession["results"]>(session.results, []),
+        context: canViewRawClinicalDetail(account, session.professionalAccountId) ? session.context : "",
+        notes: canViewRawClinicalDetail(account, session.professionalAccountId) ? session.notes : "",
+        results: parsed<Record<string, unknown>[]>(session.results, []).map((result) => canViewRawClinicalDetail(account, session.professionalAccountId) ? result : aggregateOnlySessionResult(result)) as ClinicalSession["results"],
       })),
       targetIds: normalized.config.sourceTargetIds,
       graphType: normalized.graphType,
@@ -285,7 +303,7 @@ async function reportSources(account: AppAccount, profileId: string) {
     })) : []),
     ...(canEvaluations ? evaluationRows.map(evaluationSource) : []),
     ...(canPrograms ? programRows.map((program) => programSource(program, targetRows)) : []),
-    ...(canSessions ? programRows.map((program) => sessionSource(program, sessionRows)).filter((source) => source.table?.rows.length) : []),
+    ...(canSessions ? programRows.map((program) => sessionSource(account, program, sessionRows)).filter((source) => source.table?.rows.length) : []),
   ];
   return { profile, sources };
 }
@@ -315,6 +333,7 @@ export async function GET(request: Request) {
         report,
         report.profileId ? profileById.get(report.profileId)?.fullName || "Perfil eliminado" : "Institucional",
         report.profileId ? photoUrls.get(report.profileId) || null : null,
+        account,
       )),
     });
   } catch (error) {

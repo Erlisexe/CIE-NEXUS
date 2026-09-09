@@ -33,6 +33,12 @@ export type TargetCriteria = Record<CriterionStage, MasteryCriterion>;
 
 export type TrialValue = 0 | 1;
 
+export type TrialDetail = {
+  value: TrialValue;
+  at?: string;
+  promptLevel?: "independent" | "gesture" | "verbal" | "model" | "partial_physical" | "full_physical";
+};
+
 export type ClinicalSessionResult = {
   targetId: string;
   sampled: boolean;
@@ -40,8 +46,13 @@ export type ClinicalSessionResult = {
   correct: number | null;
   opportunities: number;
   trials: TrialValue[];
+  trialDetails?: TrialDetail[];
   note: string;
   stateAtSession: TargetState;
+  criterionSnapshot?: {
+    state: CriterionStage;
+    criterion: MasteryCriterion;
+  };
   criterionStatus: "met" | "not_met" | "insufficient_sample" | "not_evaluated";
   criterionReason: string;
 };
@@ -240,7 +251,10 @@ export function replayClinicalProgram(targets: ReplayTarget[], sessions: ReplayS
       if (!target || state === "closed") {
         return { ...result, criterionStatus: "not_evaluated" as const, criterionReason: state === "closed" ? "Target cerrado antes de esta sesión." : "Target no reconocido." };
       }
-      const criterion = target.criteria[state as CriterionStage];
+      const storedCriterion = rawResult.criterionSnapshot;
+      const criterion = storedCriterion?.state === state
+        ? normalizeCriterion(storedCriterion.criterion, state as CriterionStage, target.measurement)
+        : target.criteria[state as CriterionStage];
       if (!criterion) return { ...result, criterionStatus: "not_evaluated" as const, criterionReason: "El estado no tiene criterio evaluable." };
       const evaluation = evaluateResult(result, criterion);
       const evaluatedResult = { ...result, value: evaluation.value ?? result.value, criterionStatus: evaluation.status, criterionReason: evaluation.reason };

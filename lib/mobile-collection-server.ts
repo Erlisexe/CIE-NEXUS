@@ -1,4 +1,5 @@
-import { normalizeCriteria, normalizeTargetState, normalizeTrials, replayClinicalProgram, type ClinicalSessionResult } from "./clinical-mastery.ts";
+import { normalizeCriteria, normalizeCriterion, normalizeTargetState, normalizeTrials, replayClinicalProgram, type ClinicalSessionResult } from "./clinical-mastery.ts";
+import { normalizeTrialDetails } from "./trial-data.ts";
 import { DEFAULT_SESSION_NOTE_TEMPLATE, formatSessionNoteText, normalizeSessionNoteValues, sanitizeSessionNoteFields, type SessionNoteTemplateSnapshot } from "./session-note-templates.ts";
 import { CollectionError, capturedResult, collectionDateTime, programDefinition, targetDefinition, templateDefinition, validateCollectionPayload, validateCollectionReview, type CollectionPayload, type CollectionPreparation, type CollectionProgram, type CollectionReceipt, type CollectionTarget } from "./mobile-collection.ts";
 import { deriveMobileCapabilities } from "./mobile-api-contract.ts";
@@ -74,9 +75,17 @@ export async function collectionHash(value: unknown) {
 }
 function storedResult(raw: Row, target: CollectionTarget): ClinicalSessionResult {
   const trials = normalizeTrials(raw.trials);
+  const stateAtSession = normalizeTargetState(raw.stateAtSession);
+  const trialDetails = normalizeTrialDetails(raw.trialDetails, trials);
+  const rawSnapshot = raw.criterionSnapshot && typeof raw.criterionSnapshot === "object" ? raw.criterionSnapshot as Row : null;
+  const snapshotState = rawSnapshot ? normalizeTargetState(rawSnapshot.state) : null;
+  const criterionSnapshot = rawSnapshot && snapshotState !== "closed" && snapshotState === stateAtSession
+    ? { state: snapshotState, criterion: normalizeCriterion(rawSnapshot.criterion, snapshotState, target.measurement) }
+    : undefined;
   return { targetId: target.id, sampled: raw.sampled !== false, value: typeof raw.value === "number" ? raw.value : null,
     correct: trials.length ? trials.reduce<number>((n, v) => n + v, 0) : typeof raw.correct === "number" ? raw.correct : null, opportunities: trials.length || Number(raw.opportunities) || 0,
-    trials, note: text(raw.note), stateAtSession: normalizeTargetState(raw.stateAtSession), criterionStatus: "not_evaluated", criterionReason: "" };
+    trials, ...(trialDetails.length ? { trialDetails } : {}), note: text(raw.note), stateAtSession,
+    ...(criterionSnapshot ? { criterionSnapshot } : {}), criterionStatus: "not_evaluated", criterionReason: "" };
 }
 async function existingReceipt(db: CollectionDatabase, id: string, actorId: string, hash: string): Promise<CollectionReceipt | null> {
   const [row] = await all(db, "SELECT * FROM clinical_session_runs WHERE id = ?", id);

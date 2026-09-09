@@ -36,6 +36,7 @@ import type { CalendarAppointment } from "./calendar-manager";
 import { DEFAULT_SESSION_NOTE_TEMPLATE, type SessionNoteField } from "../../lib/session-note-templates";
 import { groupProgramSessions, programsForClinicalSession } from "../../lib/clinical-session-runs";
 import { targetStateLabel } from "../../lib/clinical-mastery";
+import { PROMPT_LEVELS, promptLevelLabel, type PromptLevelId, type TrialDetail } from "../../lib/trial-data";
 
 const STATE_ORDER = ["baseline", "acquisition", "generalization", "maintenance", "closed"] as const;
 type TargetState = typeof STATE_ORDER[number];
@@ -110,7 +111,7 @@ type InterventionSession = {
   context: string;
   notes: string;
   status: string;
-  results: Array<{ targetId: string; sampled: boolean; value: number | null; correct: number | null; opportunities: number; trials: Array<0 | 1>; note: string; stateAtSession: TargetState; criterionStatus: "met" | "not_met" | "insufficient_sample" | "not_evaluated"; criterionReason: string }>;
+  results: Array<{ targetId: string; sampled: boolean; value: number | null; correct: number | null; opportunities: number; trials: Array<0 | 1>; trialDetails?: TrialDetail[]; note: string; stateAtSession: TargetState; criterionSnapshot?: { state: CriterionStage; criterion: Criterion }; criterionStatus: "met" | "not_met" | "insufficient_sample" | "not_evaluated"; criterionReason: string }>;
   transitions: Transition[];
   closedAt: string | null;
 };
@@ -132,6 +133,7 @@ type SessionResultDraft = {
   correct: string;
   opportunities: string;
   trials: Array<0 | 1>;
+  trialDetails: TrialDetail[];
   note: string;
 };
 
@@ -315,6 +317,7 @@ export default function InterventionSessionManager({
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState<SessionNoteTemplateDraft | null>(null);
+  const [promptByTarget, setPromptByTarget] = useState<Record<string, PromptLevelId>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -577,6 +580,7 @@ export default function InterventionSessionManager({
       correct: "",
       opportunities: target.measurement === "percentage" || target.measurement === "occurrence" ? "" : "1",
       trials: [],
+      trialDetails: [],
       note: "",
     }]));
     setActiveSession({
@@ -597,6 +601,7 @@ export default function InterventionSessionManager({
     setSessionNotesOpen(false);
     setFinishReviewOpen(false);
     setExitConfirmOpen(false);
+    setPromptByTarget(Object.fromEntries(activeTargets.map((target) => [target.id as string, "independent" as PromptLevelId])));
     setSetupOpen(false);
   }
 
@@ -634,7 +639,8 @@ export default function InterventionSessionManager({
       const draft = current?.results[targetId];
       if (!current || !draft) return current;
       const trials = [...draft.trials, value];
-      return { ...current, results: { ...current.results, [targetId]: { ...draft, sampled: true, trials, correct: String(trials.reduce<number>((sum, trial) => sum + trial, 0)), opportunities: String(trials.length) } } };
+      const trialDetails = [...draft.trialDetails, { value, at: new Date().toISOString(), promptLevel: promptByTarget[targetId] || "independent" }];
+      return { ...current, results: { ...current.results, [targetId]: { ...draft, sampled: true, trials, trialDetails, correct: String(trials.reduce<number>((sum, trial) => sum + trial, 0)), opportunities: String(trials.length) } } };
     });
   }
 
@@ -643,7 +649,7 @@ export default function InterventionSessionManager({
       const draft = current?.results[targetId];
       if (!current || !draft?.trials.length) return current;
       const trials = draft.trials.slice(0, -1);
-      return { ...current, results: { ...current.results, [targetId]: { ...draft, trials, correct: String(trials.reduce<number>((sum, trial) => sum + trial, 0)), opportunities: trials.length ? String(trials.length) : "" } } };
+      return { ...current, results: { ...current.results, [targetId]: { ...draft, trials, trialDetails: draft.trialDetails.slice(0, -1), correct: String(trials.reduce<number>((sum, trial) => sum + trial, 0)), opportunities: trials.length ? String(trials.length) : "" } } };
     });
   }
 
@@ -694,6 +700,9 @@ export default function InterventionSessionManager({
           correct: target.measurement === "occurrence" || target.measurement === "percentage" && Boolean(draft?.trials.length) ? draft?.trials.reduce<number>((sum, trial) => sum + trial, 0) ?? null : draft?.correct === "" ? null : Number(draft?.correct),
           opportunities: target.measurement === "occurrence" || target.measurement === "percentage" && Boolean(draft?.trials.length) ? draft?.trials.length || 0 : Number(draft?.opportunities || 0),
           trials: target.measurement === "occurrence" || target.measurement === "percentage" ? draft?.trials || [] : [],
+          trialDetails: target.measurement === "occurrence" || target.measurement === "percentage" ? draft?.trialDetails || [] : [],
+          stateAtSession: target.state,
+          ...(target.state !== "closed" ? { criterionSnapshot: { state: target.state, criterion: target.criteria[target.state] } } : {}),
           note: draft?.note || "",
         };
       }),
@@ -715,7 +724,7 @@ export default function InterventionSessionManager({
       const response = await fetch("/api/intervention-programs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "close_session_run", appointmentId: linkedAppointmentId, ...activeSession, programs: programEntries }),
+        body: JSON.stringify({ action: "close_session_run", appointmentId: linkedAppointmentId, durationSeconds: sessionElapsed, ...activeSession, programs: programEntries }),
       });
       const data = await response.json() as { programs?: InterventionProgram[]; sessions?: InterventionSession[]; sessionRun?: { id: string }; error?: string };
       if (!response.ok || !data.programs || !data.sessions?.length || !data.sessionRun) throw new Error(data.error || "No se pudo cerrar la sesión.");
@@ -896,13 +905,14 @@ export default function InterventionSessionManager({
 
               {(focusedTarget.measurement === "percentage" || focusedTarget.measurement === "occurrence") && <>
                 <div className="trial-live-summary"><div><strong>{focusedCorrect}</strong><small>Correctas</small></div><div><strong>{focusedResult.trials.length}</strong><small>Ensayos</small></div><div><strong>{focusedValue ?? 0}%</strong><small>Resultado</small></div></div>
+                <div className="trial-prompt-selector"><small>Nivel de ayuda para el próximo ensayo</small><div>{PROMPT_LEVELS.map((level) => <button type="button" key={level.id} className={(promptByTarget[focusedTarget.id as string] || "independent") === level.id ? "active" : ""} onClick={() => setPromptByTarget((current) => ({ ...current, [focusedTarget.id as string]: level.id }))}>{level.label}</button>)}</div></div>
                 <div className="trial-response-buttons">
                   <button type="button" className="correct" onClick={() => recordTrial(focusedTarget.id as string, 1)}><Check size={25}/><span><strong>Correcto</strong><small>Registrar respuesta</small></span></button>
                   <button type="button" className="incorrect" onClick={() => recordTrial(focusedTarget.id as string, 0)}><X size={25}/><span><strong>Incorrecto</strong><small>Registrar respuesta</small></span></button>
                 </div>
                 <div className="trial-requirement-meter"><div><span style={{ width: `${Math.min(100, (focusedResult.trials.length / Math.max(1, focusedCriterion?.minTrials || 1)) * 100)}%` }}/></div><small>{focusedMinimumMet ? "La muestra mínima ya fue alcanzada. Puedes continuar registrando ensayos." : `Faltan ${Math.max(0, (focusedCriterion?.minTrials || 0) - focusedResult.trials.length)} ensayos para evaluar el criterio.`}</small></div>
                 <div className="trial-history-heading"><strong>Ensayos de esta sesión</strong><button type="button" disabled={!focusedResult.trials.length} onClick={() => undoTrial(focusedTarget.id as string)}><RotateCcw size={14}/> Deshacer último</button></div>
-                {focusedResult.trials.length ? <div className="trial-history-grid" aria-label="Ensayos registrados">{focusedResult.trials.map((trial, trialIndex) => <div className={trial === 1 ? "correct" : "incorrect"} key={`${focusedTarget.id}-trial-${trialIndex}`}><span>{trialIndex + 1}</span><button type="button" aria-label={`Cambiar resultado del ensayo ${trialIndex + 1}`} onClick={() => updateSessionResult(focusedTarget.id as string, { trials: focusedResult.trials.map((item, index) => index === trialIndex ? item === 1 ? 0 : 1 : item) })}>{trial === 1 ? <Check size={16}/> : <X size={16}/>}</button><button type="button" aria-label={`Eliminar ensayo ${trialIndex + 1}`} onClick={() => updateSessionResult(focusedTarget.id as string, { trials: focusedResult.trials.filter((_, index) => index !== trialIndex) })}><Trash2 size={13}/></button></div>)}</div> : <p className="trial-history-empty">Toca Correcto o Incorrecto para registrar el primer ensayo.</p>}
+                {focusedResult.trials.length ? <div className="trial-history-grid" aria-label="Ensayos registrados">{focusedResult.trials.map((trial, trialIndex) => <div className={trial === 1 ? "correct" : "incorrect"} key={`${focusedTarget.id}-trial-${trialIndex}`} title={promptLevelLabel(focusedResult.trialDetails[trialIndex]?.promptLevel)}><span>{trialIndex + 1}</span><button type="button" aria-label={`Cambiar resultado del ensayo ${trialIndex + 1}`} onClick={() => updateSessionResult(focusedTarget.id as string, { trials: focusedResult.trials.map((item, index) => index === trialIndex ? item === 1 ? 0 : 1 : item), trialDetails: focusedResult.trialDetails.map((item, index) => index === trialIndex ? { ...item, value: item.value === 1 ? 0 : 1 } : item) })}>{trial === 1 ? <Check size={16}/> : <X size={16}/>}</button><button type="button" aria-label={`Eliminar ensayo ${trialIndex + 1}`} onClick={() => updateSessionResult(focusedTarget.id as string, { trials: focusedResult.trials.filter((_, index) => index !== trialIndex), trialDetails: focusedResult.trialDetails.filter((_, index) => index !== trialIndex) })}><Trash2 size={13}/></button></div>)}</div> : <p className="trial-history-empty">Toca Correcto o Incorrecto para registrar el primer ensayo.</p>}
               </>}
 
               {focusedTarget.measurement === "frequency" && <div className="frequency-capture"><div><small>Ocurrencias registradas</small><strong>{Math.max(0, Number(focusedResult.value || 0))}</strong></div><button type="button" className="frequency-add" onClick={() => adjustFrequency(focusedTarget.id as string, 1)}><Plus size={26}/> Registrar ocurrencia</button><button type="button" className="capture-undo" disabled={Number(focusedResult.value || 0) <= 0} onClick={() => adjustFrequency(focusedTarget.id as string, -1)}><RotateCcw size={15}/> Deshacer</button></div>}

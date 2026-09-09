@@ -1,4 +1,5 @@
 import { normalizeCriteria, normalizeTargetState, type ClinicalSessionResult, type TargetCriteria, type TargetState } from "./clinical-mastery.ts";
+import { PROMPT_LEVELS, type PromptLevelId } from "./trial-data.ts";
 import { missingRequiredSessionNoteFields, type SessionNoteTemplateSnapshot } from "./session-note-templates.ts";
 
 export type CollectionTarget = { id: string; code: string; name: string; measurement: string; unitLabel: string; specificObjective: string; state: TargetState; criteria: TargetCriteria };
@@ -8,7 +9,7 @@ export type CollectionPreparation = {
   appointment: { id: string; sessionDate: string; startTime: string; endTime: string; notes: string } | null;
   professionalAccountId: string; programs: CollectionProgram[]; templates: SessionNoteTemplateSnapshot[]; canRecordAbc: boolean; preparedAt: string;
 };
-export type Observation = { id: string; at: string; value: number; removedAt?: string; replaces?: string };
+export type Observation = { id: string; at: string; value: number; promptLevel?: PromptLevelId; removedAt?: string; replaces?: string };
 export type TargetCapture = { targetId: string; definition: string; observations: Observation[]; note: string; opportunities: number; timerStartedAt: string | null };
 export type CollectionAbc = { id: string; at: string; eventDate: string; eventTime: string; programId: string | null; targetId: string | null; antecedent: string; behavior: string; consequence: string; context: string; activity: string; note: string };
 export const PREFLIGHT_ITEMS = [
@@ -16,6 +17,7 @@ export const PREFLIGHT_ITEMS = [
   { id: "programs", label: "Revisé los programas, las instrucciones y los criterios vigentes." },
   { id: "materials", label: "Preparé los materiales y el contexto para esta sesión." },
 ] as const;
+export { PROMPT_LEVELS };
 export type SessionPreflight = { version: 1; accountId: string; profileId: string; checkedAt: string; timing: "before_start" | "recovered_draft"; checks: Record<typeof PREFLIGHT_ITEMS[number]["id"], boolean> };
 export type SignaturePoint = { x: number; y: number };
 export type SessionSignature = { version: 1; accountId: string; name: string; signedAt: string; attested: true; strokes: SignaturePoint[][] };
@@ -53,8 +55,13 @@ export function capturedResult(target: CollectionTarget, capture?: TargetCapture
   const correct = trials.length ? trials.reduce<number>((n, v) => n + v, 0) : null;
   // Both timers retain the web collector's accumulated measurement in seconds.
   const value = !sampled ? null : trials.length ? Math.round(correct! / trials.length * 1000) / 10 : events.reduce((n, e) => n + e.value, 0);
-  return { targetId: target.id, sampled, value, correct, opportunities: trials.length || (sampled ? capture!.opportunities : 0), trials, note: capture?.note || "",
-    stateAtSession: normalizeTargetState(target.state), criterionStatus: "not_evaluated", criterionReason: "" };
+  const state = normalizeTargetState(target.state);
+  const criterionStage = state === "closed" ? null : state;
+  const criterion = criterionStage ? normalizeCriteria(target.criteria, target.measurement)[criterionStage] : undefined;
+  return { targetId: target.id, sampled, value, correct, opportunities: trials.length || (sampled ? capture!.opportunities : 0), trials,
+    ...(trials.length ? { trialDetails: events.map((event) => ({ value: event.value as 0 | 1, at: event.at, ...(event.promptLevel ? { promptLevel: event.promptLevel } : {}) })) } : {}),
+    note: capture?.note || "", stateAtSession: state,
+    ...(criterion && criterionStage ? { criterionSnapshot: { state: criterionStage, criterion } } : {}), criterionStatus: "not_evaluated", criterionReason: "" };
 }
 export function stopCollectionClocks(draft: CollectionDraft, at: string, makeId: () => string): CollectionDraft {
   const end = Date.parse(at);
@@ -145,6 +152,7 @@ export function validateCollectionPayload(raw: unknown): CollectionPayload {
       if (c.definition !== targetDefinition(t)) fail("La definición de la medición no coincide con la preparación.");
       for (const e of c.observations) {
         if (!e || !uuid.test(e.id) || eventIds.has(e.id) || !at(e.at) || !Number.isFinite(e.value) || e.value < 0 || (e.removedAt && !at(e.removedAt))) fail("Un registro es inválido o está duplicado.");
+        if (e.promptLevel !== undefined && !PROMPT_LEVELS.some((item) => item.id === e.promptLevel)) fail("El nivel de ayuda del ensayo no es válido.");
         if (Date.parse(e.at) < Date.parse(body.startedAt) || Date.parse(e.at) > Date.parse(body.endedAt!) + 1000) fail("Un registro está fuera del horario de la sesión.");
         if (isDiscrete(t.measurement) && e.value !== 0 && e.value !== 1) fail("Los ensayos discretos sólo admiten 1 o 0.");
         if (t.measurement === "frequency" && !Number.isInteger(e.value)) fail("La frecuencia debe ser un número entero.");

@@ -10,6 +10,7 @@ import {
   sessionAppointments,
 } from "../../../db/schema";
 import { apiAccountGuard, canAccessChild, hasPermission } from "../../../lib/access-control";
+import { canViewRawClinicalDetail, redactAbcRecordForViewer } from "../../../lib/clinical-data-privacy";
 
 const CATEGORY_TYPES = new Set(["antecedent", "consequence"]);
 
@@ -93,12 +94,15 @@ export async function GET(request: Request) {
       categories,
       programs: programs.map((program) => ({ id: program.id, name: program.name, status: program.status })),
       targets: targets.map((target) => ({ id: target.id, programId: target.programId, code: target.code, name: target.name, state: target.state })),
-      records: records.map((record) => ({
+      records: records.map((storedRecord) => {
+        const record = redactAbcRecordForViewer(storedRecord, account);
+        return {
         ...record,
         programName: record.programId ? programMap.get(record.programId)?.name || "Programa histórico" : "Sin programa",
-        targetName: record.targetId ? targetMap.get(record.targetId)?.name || record.behaviorLabel : record.behaviorLabel,
-        sessionDate: record.sessionId ? sessionMap.get(record.sessionId)?.sessionDate || null : null,
-      })),
+        targetName: record.targetId ? targetMap.get(String(record.targetId))?.name || record.behaviorLabel : record.behaviorLabel,
+        sessionDate: storedRecord.sessionId ? sessionMap.get(storedRecord.sessionId)?.sessionDate || null : null,
+      };
+      }),
       canRecord: hasPermission(account, "abc.record") || hasPermission(account, "abc.manage"),
       canManage: hasPermission(account, "abc.manage"),
     });
@@ -130,6 +134,12 @@ export async function POST(request: Request) {
     const profileId = clean(body.profileId, 100);
     await childWithinScope(profileId, account);
     const context = await linkedClinicalContext(profileId, body);
+    if (account.role === "terapeuta" && context.session?.professionalAccountId !== undefined && context.session?.professionalAccountId !== account.id) {
+      return Response.json({ error: "Sólo puedes vincular registros ABC a tus propias sesiones." }, { status: 403 });
+    }
+    if (account.role === "terapeuta" && context.appointment?.professionalAccountId !== undefined && context.appointment?.professionalAccountId !== account.id) {
+      return Response.json({ error: "Sólo puedes vincular registros ABC a tus propias citas." }, { status: 403 });
+    }
     const eventDate = dateValue(body.eventDate);
     const eventTime = timeValue(body.eventTime);
     if (!eventDate || !eventTime) return Response.json({ error: "Registra una fecha y hora válidas." }, { status: 400 });
@@ -196,6 +206,7 @@ export async function DELETE(request: Request) {
     const [record] = await db.select().from(abcRecords).where(eq(abcRecords.id, id)).limit(1);
     if (!record) return Response.json({ error: "No se encontró el registro ABC." }, { status: 404 });
     await childWithinScope(record.profileId, account);
+    if (!canViewRawClinicalDetail(account, record.recordedByAccountId)) return Response.json({ error: "Sólo puedes eliminar tus propios registros ABC." }, { status: 403 });
     await db.delete(abcRecords).where(eq(abcRecords.id, id));
     return Response.json({ deleted: true, id });
   } catch (error) {

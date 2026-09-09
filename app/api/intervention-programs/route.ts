@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { apiAccountGuard, canAccessProfile, visibleProfileIds } from "../../../lib/access-control";
+import { apiAccountGuard, canAccessProfile, visibleProfileIds, type AppAccount } from "../../../lib/access-control";
 import { isActiveSite } from "../../../lib/sites";
 import { canRecordScheduledSession } from "../../../lib/resource-scope";
 import {
@@ -18,6 +18,7 @@ import {
 } from "../../../db/schema";
 import {
   normalizeCriteria,
+  normalizeCriterion,
   normalizeTargetState,
   normalizeTrials,
   replayClinicalProgram,
@@ -26,6 +27,8 @@ import {
   type ReplaySession,
   type ReplayTarget,
 } from "../../../lib/clinical-mastery";
+import { normalizeTrialDetails } from "../../../lib/trial-data";
+import { aggregateOnlySessionResult, canViewRawClinicalDetail } from "../../../lib/clinical-data-privacy";
 import {
   DEFAULT_SESSION_NOTE_TEMPLATE,
   formatSessionNoteText,
@@ -65,6 +68,14 @@ function sanitizeSessionResult(raw: Record<string, unknown>, target: typeof inte
   if ((target.measurement === "percentage" || target.measurement === "occurrence") && correct !== null && opportunities > 0) {
     value = Math.round((correct / opportunities) * 1000) / 10;
   }
+  const stateAtSession = normalizeTargetState(raw.stateAtSession ?? target.state);
+  const rawSnapshot = raw.criterionSnapshot && typeof raw.criterionSnapshot === "object"
+    ? raw.criterionSnapshot as Record<string, unknown>
+    : null;
+  const snapshotState = rawSnapshot ? normalizeTargetState(rawSnapshot.state) : null;
+  const criterionSnapshot = rawSnapshot && snapshotState !== "closed" && snapshotState === stateAtSession
+    ? { state: snapshotState, criterion: normalizeCriterion(rawSnapshot.criterion, snapshotState, target.measurement) }
+    : undefined;
   return {
     targetId: textValue(raw.targetId),
     sampled,
@@ -72,8 +83,10 @@ function sanitizeSessionResult(raw: Record<string, unknown>, target: typeof inte
     correct,
     opportunities,
     trials,
+    ...(normalizeTrialDetails(raw.trialDetails, trials).length ? { trialDetails: normalizeTrialDetails(raw.trialDetails, trials) } : {}),
     note: textValue(raw.note),
-    stateAtSession: normalizeTargetState(raw.stateAtSession ?? target.state),
+    stateAtSession,
+    ...(criterionSnapshot ? { criterionSnapshot } : {}),
     criterionStatus: ["met", "not_met", "insufficient_sample", "not_evaluated"].includes(textValue(raw.criterionStatus))
       ? textValue(raw.criterionStatus) as SessionResult["criterionStatus"]
       : "not_evaluated",
@@ -108,6 +121,23 @@ function normalizeProgramGraphConfig(value: unknown, targets: Array<{ id: string
 
 function serializeMasteryEvent(event: typeof targetMasteryEvents.$inferSelect) {
   return { ...event, criterionSnapshot: parseJson(event.criterionSnapshot, {}) };
+}
+
+function serializeSessionForAccount(session: typeof interventionSessions.$inferSelect, account: AppAccount) {
+  const results = parseJson<Record<string, unknown>[]>(session.results, []);
+  const transitions = parseJson<Record<string, unknown>[]>(session.transitions, []);
+  const rawDetailAvailable = canViewRawClinicalDetail(account, session.professionalAccountId);
+  if (rawDetailAvailable) return { ...session, results, transitions, rawDetailAvailable: true };
+  return {
+    ...session,
+    clinicalSessionRunId: null,
+    context: "",
+    notes: "",
+    professionalAccountId: "team",
+    rawDetailAvailable: false,
+    results: results.map(aggregateOnlySessionResult),
+    transitions,
+  };
 }
 
 function serializeProgram(
@@ -302,11 +332,7 @@ export async function GET(request: Request) {
         if (!visibleProgramIds.has(session.programId)) return false;
         if (!mineOnly) return true;
         return session.professionalAccountId === account.id;
-      }).map((session) => ({
-        ...session,
-        results: parseJson(session.results, []),
-        transitions: parseJson(session.transitions, []),
-      })),
+      }).map((session) => serializeSessionForAccount(session, account)),
       // Global dashboard/program reads do not consume history and must not bind
       // thousands of target IDs. Scoped child/program reads preserve the data.
       history: history.filter((item) => visibleTargetIds.has(item.targetId)),
@@ -441,6 +467,8 @@ export async function POST(request: Request) {
         professionalAccountId: appointment?.professionalAccountId || account.id,
         sessionDate,
         context,
+        source: "web",
+        durationSeconds: Math.max(0, Math.round(numberValue(body.durationSeconds, 0))),
         noteTemplateId: storedTemplate?.id || null,
         noteTemplateSnapshot: JSON.stringify(snapshot),
         noteValues: JSON.stringify(noteValues),
