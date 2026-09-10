@@ -1,8 +1,9 @@
 "use client";
 
-import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Edit3, LoaderCircle, MapPin, Play, Plus, UserRound, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Clock3, Edit3, LoaderCircle, MapPin, Play, Plus, RotateCcw, Trash2, UserRound, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { roleLabel, type AppRole } from "../../lib/access-control";
+import { CALENDAR_CANCELLATION_CATEGORIES, cancellationCategoryLabel } from "../../lib/calendar-appointments";
 import type { PersonnelProfile } from "./personnel-profile-manager";
 
 export type CalendarAppointment = {
@@ -20,7 +21,12 @@ export type CalendarAppointment = {
   sessionType: string;
   notes: string;
   status: "scheduled" | "in_progress" | "completed" | "cancelled";
+  clinicalSessionRunId: string | null;
   interventionSessionId: string | null;
+  cancellationCategory: string | null;
+  cancellationReason: string;
+  cancelledByAccountId: string | null;
+  cancelledAt: string | null;
 };
 
 type ClinicalProfessional = { id: string; displayName: string; email: string; role: AppRole; eligibleProfileIds: string[] };
@@ -64,6 +70,10 @@ function statusLabel(status: CalendarAppointment["status"]) {
   return { scheduled: "Programada", in_progress: "En curso", completed: "Completada", cancelled: "Cancelada" }[status];
 }
 
+function hasLinkedClinicalSession(appointment: CalendarAppointment) {
+  return Boolean(appointment.clinicalSessionRunId || appointment.interventionSessionId);
+}
+
 export default function CalendarManager({
   profiles,
   compact = false,
@@ -83,6 +93,9 @@ export default function CalendarManager({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<AppointmentDraft | null>(null);
+  const [selectedAppointment, setSelectedAppointment] = useState<CalendarAppointment | null>(null);
+  const [cancellationCategory, setCancellationCategory] = useState("");
+  const [cancellationReason, setCancellationReason] = useState("");
   const days = useMemo(() => viewDays(reference, view), [reference, view]);
   const from = iso(days[0]);
   const to = iso(days[days.length - 1]);
@@ -126,10 +139,18 @@ export default function CalendarManager({
   const upcoming = appointments.filter((appointment) => appointment.status !== "cancelled" && appointment.sessionDate >= today).slice(0, compact ? 5 : 8);
 
   function openNew(date = today) {
+    setSelectedAppointment(null);
     setDraft(blankDraft(activeProfiles[0], date));
   }
 
+  function openManagement(appointment: CalendarAppointment) {
+    setCancellationCategory("");
+    setCancellationReason("");
+    setSelectedAppointment(appointment);
+  }
+
   function edit(appointment: CalendarAppointment) {
+    setSelectedAppointment(null);
     setDraft({
       id: appointment.id,
       profileId: appointment.profileId,
@@ -157,16 +178,37 @@ export default function CalendarManager({
     } finally { setSaving(false); }
   }
 
-  async function cancel(appointment: CalendarAppointment) {
+  async function changeStatus(appointment: CalendarAppointment, action: "cancel" | "restore") {
     setSaving(true);
     try {
-      const response = await fetch("/api/calendar", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: appointment.id, action: appointment.status === "cancelled" ? "restore" : "cancel" }) });
-      const data = await response.json() as { error?: string };
+      const payload = action === "cancel"
+        ? { id: appointment.id, action, cancellationCategory, cancellationReason }
+        : { id: appointment.id, action };
+      const response = await fetch("/api/calendar", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const data = await response.json() as { appointment?: CalendarAppointment; error?: string };
       if (!response.ok) throw new Error(data.error || "No se pudo cambiar el estado de la sesión.");
-      notify(appointment.status === "cancelled" ? "Sesión restaurada." : "Sesión cancelada; el historial permanece disponible.");
+      setSelectedAppointment(null);
+      setCancellationCategory("");
+      setCancellationReason("");
+      notify(action === "restore" ? "Sesión restaurada en el calendario." : "Sesión cancelada. La justificación quedó registrada.");
       await load();
     } catch (error) {
       notify(error instanceof Error ? error.message : "No se pudo actualizar la sesión.");
+    } finally { setSaving(false); }
+  }
+
+  async function removeAppointment(appointment: CalendarAppointment) {
+    if (!window.confirm(`¿Eliminar del calendario la cita de ${appointment.profileName} del ${localDate(appointment.sessionDate).toLocaleDateString("es-NI")} a las ${appointment.startTime}? Esta acción sólo elimina la cita administrativa; no se permite cuando existe evidencia clínica.`)) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/calendar", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: appointment.id }) });
+      const data = await response.json() as { deleted?: boolean; error?: string };
+      if (!response.ok || !data.deleted) throw new Error(data.error || "No se pudo eliminar la cita.");
+      setSelectedAppointment(null);
+      notify("Cita eliminada del calendario.");
+      await load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "No se pudo eliminar la cita.");
     } finally { setSaving(false); }
   }
 
@@ -174,7 +216,7 @@ export default function CalendarManager({
   const step = view === "week" ? 7 : 30;
 
   return <div className={`calendar-module ${compact ? "compact" : ""}`}>
-    {!compact && <div className="formation-heading calendar-heading"><div><p className="section-kicker">Agenda clínica</p><h1>Calendario de sesiones</h1><p>Programa la atención y dirige al profesional responsable al registro clínico existente.</p></div>{canManage && <button className="primary-formation-button" onClick={() => openNew()}><Plus size={16}/> Programar sesión</button>}</div>}
+    {!compact && <div className="formation-heading calendar-heading"><div><p className="section-kicker">Agenda clínica</p><h1>Calendario de sesiones</h1><p>Agrega, edita, cancela o elimina citas directamente desde el calendario. La evidencia clínica permanece protegida.</p></div>{canManage && <button className="primary-formation-button" onClick={() => openNew()}><Plus size={16}/> Programar sesión</button>}</div>}
     <section className="formation-panel calendar-board">
       <header className="calendar-toolbar"><div><button aria-label="Periodo anterior" onClick={() => setReference(shift(reference, -step))}><ChevronLeft size={17}/></button><button onClick={() => setReference(new Date())}>Hoy</button><button aria-label="Periodo siguiente" onClick={() => setReference(shift(reference, step))}><ChevronRight size={17}/></button></div><h2>{title}</h2>{!compact && <div className="calendar-view-toggle"><button className={view === "week" ? "active" : ""} onClick={() => setView("week")}>Semanal</button><button className={view === "month" ? "active" : ""} onClick={() => setView("month")}>Mensual</button></div>}</header>
       {loading ? <div className="calendar-loading"><LoaderCircle className="spin" size={25}/><strong>Cargando agenda…</strong></div> : <div className={`calendar-grid ${view}`}>
@@ -184,13 +226,44 @@ export default function CalendarManager({
           const dayAppointments = appointments.filter((appointment) => appointment.sessionDate === dayIso);
           return <article className={`${dayIso === today ? "today" : ""} ${day.getMonth() !== reference.getMonth() && view === "month" ? "outside" : ""}`} key={dayIso} onDoubleClick={() => canManage && openNew(dayIso)}>
             <header><span>{day.getDate()}</span>{dayIso === today && <small>Hoy</small>}</header>
-            <div>{dayAppointments.map((appointment) => <button className={`calendar-event ${appointment.status}`} key={appointment.id} title={`${appointment.profileName} · ${appointment.professionalName}`} onClick={() => appointment.canStart && (appointment.status === "scheduled" || appointment.status === "in_progress") ? onOpenSession(appointment) : undefined}><strong>{appointment.startTime} · {appointment.profileName}</strong><small>{appointment.professionalName}</small></button>)}</div>
+            <div>{dayAppointments.map((appointment) => <button className={`calendar-event ${appointment.status}`} key={appointment.id} title={`${appointment.profileName} · ${appointment.professionalName} · ${statusLabel(appointment.status)}`} onClick={() => {
+              if (canManage && !compact) return openManagement(appointment);
+              if (appointment.canStart && (appointment.status === "scheduled" || appointment.status === "in_progress")) onOpenSession(appointment);
+            }}><strong>{appointment.startTime} · {appointment.profileName}</strong><small>{appointment.professionalName}</small></button>)}</div>
             {canManage && !compact && <button className="calendar-day-add" aria-label={`Programar el ${dayIso}`} onClick={() => openNew(dayIso)}><Plus size={13}/></button>}
           </article>;
         })}
       </div>}
     </section>
-    <section className="formation-panel upcoming-sessions-panel"><header><div><p className="section-kicker">Trabajo inmediato</p><h2>Próximas terapias</h2></div><span>{upcoming.length}</span></header>{upcoming.length ? <div>{upcoming.map((appointment) => <article key={appointment.id}><time><strong>{localDate(appointment.sessionDate).toLocaleDateString("es-NI", { weekday: "short", day: "2-digit", month: "short" })}</strong><span>{appointment.startTime}–{appointment.endTime}</span></time><div><strong>{appointment.profileName}</strong><small><UserRound size={13}/>{appointment.professionalName}{appointment.professionalRole ? ` · ${roleLabel(appointment.professionalRole)}` : ""} · <MapPin size={13}/>{appointment.site}</small></div><span className={`appointment-status ${appointment.status}`}>{statusLabel(appointment.status)}</span><div className="appointment-actions"><button className="session-enter" disabled={!appointment.canStart || appointment.status === "completed"} onClick={() => onOpenSession(appointment)}><Play size={14}/>{appointment.status === "completed" ? "Completada" : appointment.canStart ? "Iniciar terapia" : "Asignada a otro profesional"}</button>{canManage && !appointment.interventionSessionId && <><button title="Editar" aria-label="Editar sesión programada" onClick={() => edit(appointment)}><Edit3 size={14}/></button><button className="cancel" onClick={() => cancel(appointment)}>{appointment.status === "cancelled" ? "Restaurar" : "Cancelar"}</button></>}</div></article>)}</div> : <div className="calendar-empty"><CalendarDays size={25}/><strong>No hay terapias próximas en este alcance.</strong><p>{canManage ? "Programa una sesión cuando existan niños y profesionales clínicos disponibles." : "Las nuevas asignaciones aparecerán aquí automáticamente."}</p></div>}</section>
+    <section className="formation-panel upcoming-sessions-panel"><header><div><p className="section-kicker">Trabajo inmediato</p><h2>Próximas terapias</h2></div><span>{upcoming.length}</span></header>{upcoming.length ? <div>{upcoming.map((appointment) => <article key={appointment.id}><time><strong>{localDate(appointment.sessionDate).toLocaleDateString("es-NI", { weekday: "short", day: "2-digit", month: "short" })}</strong><span>{appointment.startTime}–{appointment.endTime}</span></time><div><strong>{appointment.profileName}</strong><small><UserRound size={13}/>{appointment.professionalName}{appointment.professionalRole ? ` · ${roleLabel(appointment.professionalRole)}` : ""} · <MapPin size={13}/>{appointment.site}</small></div><span className={`appointment-status ${appointment.status}`}>{statusLabel(appointment.status)}</span><div className="appointment-actions"><button className="session-enter" disabled={!appointment.canStart || appointment.status === "completed" || appointment.status === "cancelled"} onClick={() => onOpenSession(appointment)}><Play size={14}/>{appointment.status === "completed" ? "Completada" : appointment.canStart ? "Iniciar terapia" : "Asignada a otro profesional"}</button>{canManage && <button title="Gestionar" aria-label="Gestionar sesión programada" onClick={() => openManagement(appointment)}><Edit3 size={14}/></button>}</div></article>)}</div> : <div className="calendar-empty"><CalendarDays size={25}/><strong>No hay terapias próximas en este alcance.</strong><p>{canManage ? "Puedes programar una nueva sesión o navegar a fechas anteriores para gestionar citas pasadas directamente." : "Las nuevas asignaciones aparecerán aquí automáticamente."}</p></div>}</section>
+
+    {selectedAppointment && !compact && <div className="modal-backdrop"><section className="calendar-modal" role="dialog" aria-modal="true" aria-labelledby="calendar-manage-title"><div className="modal-title"><div><p className="section-kicker">Gestión directa</p><h2 id="calendar-manage-title">Gestionar sesión</h2></div><button aria-label="Cerrar" onClick={() => setSelectedAppointment(null)}><X size={19}/></button></div>
+      <div className="calendar-form-grid">
+        <label><span>Niño</span><input readOnly value={selectedAppointment.profileName}/></label>
+        <label><span>Profesional</span><input readOnly value={selectedAppointment.professionalName}/></label>
+        <label><span>Fecha</span><input readOnly value={localDate(selectedAppointment.sessionDate).toLocaleDateString("es-NI", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}/></label>
+        <label><span>Horario</span><input readOnly value={`${selectedAppointment.startTime}–${selectedAppointment.endTime}`}/></label>
+        <label><span>Tipo</span><input readOnly value={selectedAppointment.sessionType}/></label>
+        <label><span>Estado</span><input readOnly value={statusLabel(selectedAppointment.status)}/></label>
+        {selectedAppointment.notes && <label className="field-wide"><span>Notas</span><textarea readOnly value={selectedAppointment.notes}/></label>}
+      </div>
+
+      {selectedAppointment.status === "cancelled" && <div className="calendar-form-note"><AlertTriangle size={16}/><p><strong>{selectedAppointment.cancellationCategory ? cancellationCategoryLabel(selectedAppointment.cancellationCategory) : "Cancelación registrada"}</strong>{selectedAppointment.cancellationReason ? ` · ${selectedAppointment.cancellationReason}` : ""}{selectedAppointment.cancelledAt ? ` · ${new Date(selectedAppointment.cancelledAt).toLocaleString("es-NI")}` : ""}</p></div>}
+
+      {hasLinkedClinicalSession(selectedAppointment) ? <div className="calendar-form-note"><AlertTriangle size={16}/><p>Esta cita ya está vinculada a actividad clínica. Se conserva en el calendario para mantener la trazabilidad y no puede editarse, cancelarse ni eliminarse desde aquí.</p></div> : selectedAppointment.status !== "cancelled" && selectedAppointment.status !== "completed" && <div className="calendar-form-grid" style={{ marginTop: 12 }}>
+        <label><span>Motivo de cancelación</span><select value={cancellationCategory} onChange={(event) => setCancellationCategory(event.target.value)}><option value="">Seleccionar categoría</option>{CALENDAR_CANCELLATION_CATEGORIES.map((category) => <option value={category.value} key={category.value}>{category.label}</option>)}</select></label>
+        <label><span>Justificación {cancellationCategory === "other" ? "(obligatoria)" : "(opcional)"}</span><input value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} placeholder={cancellationCategory === "other" ? "Describe el motivo" : "Detalle adicional"}/></label>
+      </div>}
+
+      <div className="modal-actions" style={{ flexWrap: "wrap" }}>
+        <button className="secondary-formation-button" onClick={() => setSelectedAppointment(null)}>Cerrar</button>
+        {!hasLinkedClinicalSession(selectedAppointment) && selectedAppointment.status !== "completed" && <button className="secondary-formation-button" disabled={saving} onClick={() => edit(selectedAppointment)}><Edit3 size={15}/> Editar</button>}
+        {selectedAppointment.canStart && (selectedAppointment.status === "scheduled" || selectedAppointment.status === "in_progress") && <button className="primary-formation-button" disabled={saving} onClick={() => { setSelectedAppointment(null); onOpenSession(selectedAppointment); }}><Play size={15}/> Iniciar terapia</button>}
+        {!hasLinkedClinicalSession(selectedAppointment) && selectedAppointment.status === "cancelled" && <button className="secondary-formation-button" disabled={saving} onClick={() => changeStatus(selectedAppointment, "restore")}><RotateCcw size={15}/> Restaurar</button>}
+        {!hasLinkedClinicalSession(selectedAppointment) && selectedAppointment.status !== "cancelled" && selectedAppointment.status !== "completed" && <button className="secondary-formation-button" disabled={saving || !cancellationCategory || (cancellationCategory === "other" && !cancellationReason.trim())} onClick={() => changeStatus(selectedAppointment, "cancel")}><X size={15}/> Cancelar sesión</button>}
+        {!hasLinkedClinicalSession(selectedAppointment) && (selectedAppointment.status === "scheduled" || selectedAppointment.status === "cancelled") && <button className="secondary-formation-button" style={{ color: "#9c5660" }} disabled={saving} onClick={() => removeAppointment(selectedAppointment)}>{saving ? <LoaderCircle className="spin" size={15}/> : <Trash2 size={15}/>} Eliminar del calendario</button>}
+      </div>
+    </section></div>}
 
     {draft && <div className="modal-backdrop"><section className="calendar-modal" role="dialog" aria-modal="true" aria-labelledby="calendar-modal-title"><div className="modal-title"><div><p className="section-kicker">Agenda clínica</p><h2 id="calendar-modal-title">{draft.id ? "Editar sesión programada" : "Programar sesión"}</h2></div><button aria-label="Cerrar" onClick={() => setDraft(null)}><X size={19}/></button></div><div className="calendar-form-grid">
       <label><span>Niño</span><select autoFocus value={draft.profileId} onChange={(event) => setDraft({ ...draft, profileId: event.target.value, professionalAccountId: "" })}><option value="">Seleccionar niño</option>{activeProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName} · {profile.site}</option>)}</select></label>
