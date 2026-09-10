@@ -1,13 +1,22 @@
 import { and, asc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
-import { getDb } from "../../../db";
-import { meetingRequests, personnelProfiles, sessionAppointments } from "../../../db/schema";
+import { getDb, getRawDb } from "../../../db";
+import { abcRecords, meetingRequests, personnelProfiles, sessionAppointments } from "../../../db/schema";
 import { apiAccountGuard, canAccessChild, hasPermission, ROLE_ORDER, type AppRole } from "../../../lib/access-control";
+import { appointmentHasClinicalEvidence, canAdministrativelyDeleteAppointment, normalizeCancellationInput } from "../../../lib/calendar-appointments";
 import { MEETING_BLOCKING_STATUSES } from "../../../lib/meetings";
 import { canClinicalProfessionalServeChild } from "../../../lib/resource-scope";
 import { isActiveSite } from "../../../lib/sites";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
 const STATUSES = new Set(["scheduled", "in_progress", "completed", "cancelled"]);
+
+type CancellationAudit = {
+  appointment_id: string;
+  category: string | null;
+  reason: string;
+  actor_account_id: string;
+  created_at: string;
+};
 
 function clean(value: unknown, max = 1000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -68,19 +77,46 @@ async function appointmentView(account: Awaited<ReturnType<typeof apiAccountGuar
   return Boolean(profile && canAccessChild(account, profile));
 }
 
+async function latestCancellationAudit(rows: Array<typeof sessionAppointments.$inferSelect>) {
+  const result = new Map<string, CancellationAudit>();
+  if (!rows.length) return result;
+  const rawDb = await getRawDb();
+  const ids = rows.filter((row) => row.status === "cancelled").map((row) => row.id);
+  for (let index = 0; index < ids.length; index += 80) {
+    const chunk = ids.slice(index, index + 80);
+    const placeholders = chunk.map(() => "?").join(",");
+    const response = await rawDb.prepare(`
+      SELECT appointment_id, category, reason, actor_account_id, created_at
+      FROM session_appointment_audit
+      WHERE action = 'cancel' AND appointment_id IN (${placeholders})
+      ORDER BY created_at DESC
+    `).bind(...chunk).all<CancellationAudit>();
+    for (const row of response.results || []) if (!result.has(row.appointment_id)) result.set(row.appointment_id, row);
+  }
+  return result;
+}
+
 async function serializeRows(rows: Array<typeof sessionAppointments.$inferSelect>, account: NonNullable<Awaited<ReturnType<typeof apiAccountGuard>>["account"]>) {
   const db = await getDb();
   const profiles = rows.length ? await db.select({ id: personnelProfiles.id, fullName: personnelProfiles.fullName, site: personnelProfiles.site, status: personnelProfiles.status }).from(personnelProfiles) : [];
   const professionals = await clinicalProfessionalCatalog();
+  const cancellationAudit = await latestCancellationAudit(rows);
   const profileMap = new Map(profiles.map((profile) => [profile.id, profile]));
   const professionalMap = new Map(professionals.map((professional) => [professional.id, professional]));
-  return rows.map((row) => ({
-    ...row,
-    profileName: profileMap.get(row.profileId)?.fullName || "Niño no disponible",
-    professionalName: professionalMap.get(row.professionalAccountId)?.displayName || "Profesional no disponible",
-    professionalRole: professionalMap.get(row.professionalAccountId)?.role || null,
-    canStart: row.professionalAccountId === account.id && (hasPermission(account, "sessions.record") || hasPermission(account, "sessions.manage")),
-  }));
+  return rows.map((row) => {
+    const cancellation = cancellationAudit.get(row.id);
+    return {
+      ...row,
+      profileName: profileMap.get(row.profileId)?.fullName || "Niño no disponible",
+      professionalName: professionalMap.get(row.professionalAccountId)?.displayName || "Profesional no disponible",
+      professionalRole: professionalMap.get(row.professionalAccountId)?.role || null,
+      canStart: row.professionalAccountId === account.id && (hasPermission(account, "sessions.record") || hasPermission(account, "sessions.manage")),
+      cancellationCategory: cancellation?.category || null,
+      cancellationReason: cancellation?.reason || "",
+      cancelledByAccountId: cancellation?.actor_account_id || null,
+      cancelledAt: cancellation?.created_at || null,
+    };
+  });
 }
 
 async function validateProfessional(professionalAccountId: string, profileId: string) {
@@ -107,6 +143,30 @@ async function ensureNoOverlap(professionalAccountId: string, sessionDate: strin
     sql`${meetingRequests.startTime} < ${endTime} and ${meetingRequests.endTime} > ${startTime}`,
   )).limit(1);
   if (meetingOverlap) throw new Error("El profesional ya tiene una reunión solicitada o aceptada dentro de ese horario.");
+}
+
+async function hasAppointmentEvidence(appointment: typeof sessionAppointments.$inferSelect) {
+  if (appointmentHasClinicalEvidence(appointment)) return true;
+  const db = await getDb();
+  const [abcEvidence] = await db.select({ id: abcRecords.id }).from(abcRecords).where(eq(abcRecords.appointmentId, appointment.id)).limit(1);
+  return Boolean(abcEvidence);
+}
+
+function appointmentSnapshot(appointment: typeof sessionAppointments.$inferSelect) {
+  return JSON.stringify({
+    id: appointment.id,
+    profileId: appointment.profileId,
+    professionalAccountId: appointment.professionalAccountId,
+    site: appointment.site,
+    sessionDate: appointment.sessionDate,
+    startTime: appointment.startTime,
+    endTime: appointment.endTime,
+    sessionType: appointment.sessionType,
+    notes: appointment.notes,
+    status: appointment.status,
+    clinicalSessionRunId: appointment.clinicalSessionRunId,
+    interventionSessionId: appointment.interventionSessionId,
+  });
 }
 
 export async function GET(request: Request) {
@@ -179,12 +239,37 @@ export async function PUT(request: Request) {
     const [current] = await db.select().from(sessionAppointments).where(eq(sessionAppointments.id, id)).limit(1);
     if (!current) return Response.json({ error: "No se encontró la sesión programada." }, { status: 404 });
     if (!(await appointmentView(account, current))) return Response.json({ error: "La sesión no está dentro de tu alcance." }, { status: 403 });
-    if (body.action === "cancel" || body.action === "restore") {
-      if (current.interventionSessionId) return Response.json({ error: "Una sesión clínica ya cerrada no puede cancelarse desde el calendario." }, { status: 409 });
-      const [appointment] = await db.update(sessionAppointments).set({ status: body.action === "restore" ? "scheduled" : "cancelled", updatedAt: new Date().toISOString() }).where(eq(sessionAppointments.id, id)).returning();
+
+    if (body.action === "cancel") {
+      if (await hasAppointmentEvidence(current)) return Response.json({ error: "La cita ya contiene evidencia clínica y no puede cancelarse como una cita administrativa." }, { status: 409 });
+      const { category, reason } = normalizeCancellationInput(body.cancellationCategory, body.cancellationReason);
+      const now = new Date().toISOString();
+      const rawDb = await getRawDb();
+      await rawDb.batch([
+        rawDb.prepare("UPDATE session_appointments SET status = 'cancelled', updated_at = ? WHERE id = ?").bind(now, id),
+        rawDb.prepare("INSERT INTO session_appointment_audit (id, appointment_id, action, category, reason, actor_account_id, snapshot, created_at) VALUES (?, ?, 'cancel', ?, ?, ?, ?, ?)")
+          .bind(crypto.randomUUID(), id, category, reason, account.id, appointmentSnapshot(current), now),
+      ]);
+      const [appointment] = await db.select().from(sessionAppointments).where(eq(sessionAppointments.id, id)).limit(1);
       return Response.json({ appointment: (await serializeRows([appointment], account))[0] });
     }
-    if (current.interventionSessionId) return Response.json({ error: "La cita ya está vinculada a una sesión clínica cerrada." }, { status: 409 });
+
+    if (body.action === "restore") {
+      if (await hasAppointmentEvidence(current)) return Response.json({ error: "La cita contiene evidencia clínica y su estado no puede restaurarse desde el calendario." }, { status: 409 });
+      if (current.status !== "cancelled") return Response.json({ error: "Sólo una cita cancelada puede restaurarse." }, { status: 409 });
+      await ensureNoOverlap(current.professionalAccountId, current.sessionDate, current.startTime, current.endTime, current.id);
+      const now = new Date().toISOString();
+      const rawDb = await getRawDb();
+      await rawDb.batch([
+        rawDb.prepare("UPDATE session_appointments SET status = 'scheduled', updated_at = ? WHERE id = ?").bind(now, id),
+        rawDb.prepare("INSERT INTO session_appointment_audit (id, appointment_id, action, category, reason, actor_account_id, snapshot, created_at) VALUES (?, ?, 'restore', NULL, '', ?, ?, ?)")
+          .bind(crypto.randomUUID(), id, account.id, appointmentSnapshot(current), now),
+      ]);
+      const [appointment] = await db.select().from(sessionAppointments).where(eq(sessionAppointments.id, id)).limit(1);
+      return Response.json({ appointment: (await serializeRows([appointment], account))[0] });
+    }
+
+    if (await hasAppointmentEvidence(current)) return Response.json({ error: "La cita ya contiene evidencia clínica y no puede editarse desde el calendario." }, { status: 409 });
     const profileId = clean(body.profileId, 100);
     const professionalAccountId = clean(body.professionalAccountId, 100);
     const sessionDate = dateValue(body.sessionDate);
@@ -205,6 +290,32 @@ export async function PUT(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "No se pudo actualizar el calendario.";
     if ((message + String((error as {cause?:unknown})?.cause)).includes("meeting_schedule_conflict")) return Response.json({error:"El profesional tiene una reunión en ese horario. Actualiza la agenda."},{status:409});
-    return Response.json({ error: message }, { status: /Vincula|Selecciona|horario/.test(message) ? 409 : 500 });
+    return Response.json({ error: message }, { status: /Vincula|Selecciona|horario|categoría|Describe/.test(message) ? 409 : 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  const { account, denied } = await apiAccountGuard({ permissions: ["calendar.manage"] });
+  if (denied || !account) return denied;
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    const id = clean(body.id, 100);
+    const db = await getDb();
+    const [current] = await db.select().from(sessionAppointments).where(eq(sessionAppointments.id, id)).limit(1);
+    if (!current) return Response.json({ error: "No se encontró la sesión programada." }, { status: 404 });
+    if (!(await appointmentView(account, current))) return Response.json({ error: "La sesión no está dentro de tu alcance." }, { status: 403 });
+    if (!canAdministrativelyDeleteAppointment(current) || await hasAppointmentEvidence(current)) {
+      return Response.json({ error: "No puede eliminarse porque ya existe actividad o evidencia clínica asociada. Conserva la cita para mantener la trazabilidad." }, { status: 409 });
+    }
+    const now = new Date().toISOString();
+    const rawDb = await getRawDb();
+    await rawDb.batch([
+      rawDb.prepare("INSERT INTO session_appointment_audit (id, appointment_id, action, category, reason, actor_account_id, snapshot, created_at) VALUES (?, ?, 'delete', NULL, '', ?, ?, ?)")
+        .bind(crypto.randomUUID(), id, account.id, appointmentSnapshot(current), now),
+      rawDb.prepare("DELETE FROM session_appointments WHERE id = ?").bind(id),
+    ]);
+    return Response.json({ deleted: true, id });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "No se pudo eliminar la cita del calendario." }, { status: 500 });
   }
 }
