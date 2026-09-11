@@ -1,4 +1,4 @@
-export const CALENDAR_CANCELLATION_CATEGORIES = [
+export const CANCELLATION_CATEGORIES = [
   { value: "child_unwell", label: "Niño indispuesto" },
   { value: "professional_absent", label: "Profesional ausente" },
   { value: "family_unavailable", label: "Familia no disponible" },
@@ -6,26 +6,62 @@ export const CALENDAR_CANCELLATION_CATEGORIES = [
   { value: "other", label: "Otro" },
 ] as const;
 
-export type CalendarCancellationCategory = typeof CALENDAR_CANCELLATION_CATEGORIES[number]["value"];
+export type CancellationCategory = typeof CANCELLATION_CATEGORIES[number]["value"];
 
-const CATEGORY_VALUES = new Set<string>(CALENDAR_CANCELLATION_CATEGORIES.map((item) => item.value));
+const CATEGORY_VALUES = new Set<string>(CANCELLATION_CATEGORIES.map((category) => category.value));
+const LEGACY_CATEGORY_LABELS: Record<string, string> = {
+  therapist_absent: "Profesional ausente",
+  family_request: "Familia no disponible",
+  center_closure: "Otro",
+};
 
-export function cancellationCategoryLabel(value: string) {
-  return CALENDAR_CANCELLATION_CATEGORIES.find((item) => item.value === value)?.label || "Motivo no disponible";
+export function cancellationCategory(value: unknown): CancellationCategory | null {
+  return typeof value === "string" && CATEGORY_VALUES.has(value) ? value as CancellationCategory : null;
 }
 
-export function normalizeCancellationInput(category: unknown, reason: unknown) {
-  const cleanCategory = typeof category === "string" ? category.trim() : "";
-  const cleanReason = typeof reason === "string" ? reason.trim().slice(0, 1000) : "";
-  if (!CATEGORY_VALUES.has(cleanCategory)) throw new Error("Selecciona una categoría de cancelación.");
-  if (cleanCategory === "other" && !cleanReason) throw new Error("Describe el motivo cuando seleccionas “Otro”.");
-  return { category: cleanCategory as CalendarCancellationCategory, reason: cleanReason };
+export function cancellationLabel(value: string | null | undefined) {
+  return CANCELLATION_CATEGORIES.find((category) => category.value === value)?.label
+    || (value ? LEGACY_CATEGORY_LABELS[value] : "Cancelación anterior");
 }
 
-export function appointmentHasClinicalEvidence(appointment: { clinicalSessionRunId?: string | null; interventionSessionId?: string | null }) {
-  return Boolean(appointment.clinicalSessionRunId || appointment.interventionSessionId);
+export function validateCancellation(categoryValue: unknown, reasonValue: unknown) {
+  const category = cancellationCategory(categoryValue);
+  const reason = typeof reasonValue === "string" ? reasonValue.trim().slice(0, 1000) : "";
+  if (!category) return { error: "Selecciona una categoría de cancelación." } as const;
+  if (category === "other" && !reason) return { error: "Describe el motivo cuando seleccionas “Otro”." } as const;
+  return { category, reason } as const;
 }
 
-export function canAdministrativelyDeleteAppointment(appointment: { status: string; clinicalSessionRunId?: string | null; interventionSessionId?: string | null }) {
-  return (appointment.status === "scheduled" || appointment.status === "cancelled") && !appointmentHasClinicalEvidence(appointment);
+export function appointmentHasLinkedClinicalEvidence(appointment: {
+  interventionSessionId?: string | null;
+  clinicalSessionRunId?: string | null;
+}) {
+  return Boolean(appointment.interventionSessionId || appointment.clinicalSessionRunId);
 }
+
+export function canAdministrativelyEditAppointment(appointment: {
+  status: string;
+  interventionSessionId?: string | null;
+  clinicalSessionRunId?: string | null;
+}) {
+  return (appointment.status === "scheduled" || appointment.status === "cancelled")
+    && !appointmentHasLinkedClinicalEvidence(appointment);
+}
+
+export function canAdministrativelyCancelAppointment(appointment: {
+  status: string;
+  interventionSessionId?: string | null;
+  clinicalSessionRunId?: string | null;
+}) {
+  return appointment.status === "scheduled" && !appointmentHasLinkedClinicalEvidence(appointment);
+}
+
+export function canAdministrativelyRestoreAppointment(appointment: {
+  status: string;
+  interventionSessionId?: string | null;
+  clinicalSessionRunId?: string | null;
+}) {
+  return appointment.status === "cancelled" && !appointmentHasLinkedClinicalEvidence(appointment);
+}
+
+export const canAdministrativelyDeleteAppointment = canAdministrativelyEditAppointment;
