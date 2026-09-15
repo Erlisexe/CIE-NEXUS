@@ -15,8 +15,6 @@ import {
   Filter,
   Download,
   FileDown,
-  FileImage,
-  FileSpreadsheet,
   LineChart,
   LoaderCircle,
   LockKeyhole,
@@ -44,14 +42,8 @@ import {
   phaseTemplate,
   type AnalyticGraph,
   type GraphConfig,
-  type GraphDataSource,
-  type GraphGrouping,
   type GraphPoint,
-  type GraphPeriod,
-  type GraphRateUnit,
   type GraphType,
-  type GraphXAxis,
-  type GraphYAxis,
   type LineDesign,
   type PhaseBoundary,
   type VisualAnalysis,
@@ -64,7 +56,6 @@ import {
   type ClinicalSession,
   type ClinicalTarget,
 } from "../../lib/automatic-graphs";
-import { buildConfigurableGraph, type ConfigurableGraphDataset } from "../../lib/configurable-graphs";
 import {
   areasForPackage,
   targetsForPackage,
@@ -116,7 +107,6 @@ const AUTO_GRAPH_LABELS = {
   bar: "Comparación entre sedes",
   cumulative: "Repertorio acumulado",
 } as const;
-type AutomaticGraphType = keyof typeof AUTO_GRAPH_LABELS;
 
 const PROGRAM_MEASUREMENT_LABELS = CLINICAL_MEASUREMENT_LABELS;
 
@@ -182,109 +172,6 @@ function downloadBlob(content: BlobPart, type: string, name: string) {
 
 function safeFileName(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "grafica";
-}
-
-function graphSvg(graph: AnalyticGraph) {
-  const source = document.getElementById(`graph-svg-${graph.id}`);
-  if (!(source instanceof SVGSVGElement)) throw new Error("La gráfica todavía no está lista para exportarse.");
-  const clone = source.cloneNode(true) as SVGSVGElement;
-  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  return clone;
-}
-
-async function graphPng(graph: AnalyticGraph, scale = 2) {
-  const clone = graphSvg(graph);
-  const viewBox = clone.viewBox.baseVal;
-  const width = viewBox.width || 1200;
-  const height = viewBox.height || 680;
-  const svg = new XMLSerializer().serializeToString(clone);
-  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-  try {
-    const image = new Image();
-    image.decoding = "async";
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("No se pudo preparar la imagen de la gráfica."));
-      image.src = url;
-    });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(height * scale);
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("El navegador no pudo crear la exportación.");
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/png", 1);
-    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("No se pudo generar el PNG.")), "image/png", 1));
-    return { blob, dataUrl, width, height };
-  } finally { URL.revokeObjectURL(url); }
-}
-
-async function exportPng(graph: AnalyticGraph) {
-  const png = await graphPng(graph);
-  downloadBlob(png.blob, "image/png", `${safeFileName(graph.title)}.png`);
-}
-
-async function exportPdf(graph: AnalyticGraph) {
-  const [{ PDFDocument, StandardFonts, rgb }, png] = await Promise.all([import("pdf-lib"), graphPng(graph)]);
-  const document = await PDFDocument.create();
-  const page = document.addPage([841.89, 595.28]);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const image = await document.embedPng(png.dataUrl);
-  const maxWidth = 785;
-  const maxHeight = 500;
-  const ratio = Math.min(maxWidth / image.width, maxHeight / image.height);
-  const drawWidth = image.width * ratio;
-  const drawHeight = image.height * ratio;
-  page.drawImage(image, { x: (page.getWidth() - drawWidth) / 2, y: 38, width: drawWidth, height: drawHeight });
-  page.drawText("CIE Nexus · Exportación clínica", { x: 28, y: 570, size: 9, font, color: rgb(.25, .34, .3) });
-  page.drawText(`Generada: ${new Date().toLocaleString("es-NI")}`, { x: 650, y: 570, size: 8, font, color: rgb(.4, .45, .43) });
-  const bytes = await document.save();
-  const pdfBuffer = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(pdfBuffer).set(bytes);
-  downloadBlob(pdfBuffer, "application/pdf", `${safeFileName(graph.title)}.pdf`);
-}
-
-function displayedGraphValues(graph: AnalyticGraph) {
-  const totals = new Map<string, number>();
-  return graph.points.map((point, index) => {
-    let displayed = point.value;
-    if (graph.graphType === "cumulative" && point.value !== null) {
-      const total = (totals.get(point.series) || 0) + Math.max(0, point.value);
-      totals.set(point.series, total);
-      displayed = total;
-    }
-    return { order: index + 1, point, displayed };
-  });
-}
-
-async function exportExcel(graph: AnalyticGraph) {
-  const ExcelJS = (await import("exceljs")).default;
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = "CIE Nexus";
-  workbook.created = new Date();
-  const sheet = workbook.addWorksheet("Gráfica", { views: [{ state: "frozen", ySplit: 9 }] });
-  sheet.columns = [
-    { key: "a", width: 18 }, { key: "b", width: 34 }, { key: "c", width: 18 }, { key: "d", width: 28 },
-    { key: "e", width: 18 }, { key: "f", width: 18 }, { key: "g", width: 52 },
-  ];
-  sheet.addRow([graph.title]);
-  sheet.mergeCells("A1:G1");
-  sheet.getCell("A1").font = { bold: true, size: 18, color: { argb: "FF164E43" } };
-  sheet.addRow([graph.objective]);
-  sheet.mergeCells("A2:G2");
-  graph.config.exportMetadata.forEach((line) => { const row = sheet.addRow([line]); sheet.mergeCells(`A${row.number}:G${row.number}`); });
-  sheet.addRow([]);
-  const header = sheet.addRow(["Orden", "Eje horizontal", "Valor", "Serie / agrupación", "Criterio", "Progreso del criterio", "Nota"]);
-  header.font = { bold: true, color: { argb: "FFFFFFFF" } };
-  header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF176654" } };
-  displayedGraphValues(graph).forEach(({ order, point, displayed }) => sheet.addRow([
-    order, point.label, displayed ?? "No medido", point.series, point.criterion ?? "", point.criterionProgress?.label || "", point.note,
-  ]));
-  sheet.autoFilter = { from: { row: header.number, column: 1 }, to: { row: header.number, column: 7 } };
-  const buffer = await workbook.xlsx.writeBuffer();
-  downloadBlob(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", `${safeFileName(graph.title)}.xlsx`);
 }
 
 function uniqueInOrder(values: string[]) {
@@ -569,24 +456,18 @@ function pointTooltip(point: GraphPoint, value: number) {
 export function GraphCanvas({ graph, showLegend = true, density = "standard", edgeInset = false }: { graph: AnalyticGraph; showLegend?: boolean; density?: AutomaticDensity; edgeInset?: boolean }) {
   const width = density === "large" ? 1200 : 1000;
   const height = density === "compact" ? 470 : density === "large" ? 680 : 560;
-  const categoryKeys = uniqueInOrder(graph.points.map((point) => point.xKey || point.label));
-  const categoryLabel = new Map(graph.points.map((point) => [point.xKey || point.label, point.label]));
+  const labels = uniqueInOrder(graph.points.map((point) => point.label));
   const series = uniqueInOrder(graph.points.map((point) => point.series || "Datos"));
-  const rotateXLabels = categoryKeys.length > 7 || categoryKeys.some((key) => (categoryLabel.get(key) || key).length > 15);
-  const metadata = graph.config.exportMetadata.slice(0, 8);
-  const margin = { left: 90, right: 34, top: metadata.length ? Math.max(142, 90 + metadata.length * 12) : 105, bottom: rotateXLabels ? 118 : 78 };
+  const rotateXLabels = labels.length > 7 || labels.some((label) => label.length > 15);
+  const margin = { left: 90, right: 34, top: 105, bottom: rotateXLabels ? 118 : 78 };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
-  const isColumn = graph.graphType === "bar" || graph.graphType === "stacked-bar";
-  const horizontalInset = edgeInset && !isColumn && categoryKeys.length > 1 ? 30 : 0;
-  const pointKey = (point: GraphPoint) => point.xKey || point.label;
+  const horizontalInset = edgeInset && graph.graphType !== "bar" && labels.length > 1 ? 30 : 0;
   const cumulativeById = new Map<string, number | null>();
   if (graph.graphType === "cumulative") {
     series.forEach((name) => {
       let total = 0;
-      graph.points.filter((point) => (point.series || "Datos") === name)
-        .sort((a, b) => categoryKeys.indexOf(pointKey(a)) - categoryKeys.indexOf(pointKey(b)))
-        .forEach((point) => {
+      graph.points.filter((point) => (point.series || "Datos") === name).forEach((point) => {
         if (point.value === null) cumulativeById.set(point.id, null);
         else {
           total += Math.max(0, point.value);
@@ -597,44 +478,35 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
   }
   const plottedValues = graph.points.flatMap((point) => {
     const value = graph.graphType === "cumulative" ? cumulativeById.get(point.id) : point.value;
-    return [value, graph.config.showCriterion ? point.criterion : null].filter((item): item is number => typeof item === "number" && Number.isFinite(item));
+    return [value, graph.designType === "changing-criterion" ? point.criterion : null].filter((item): item is number => typeof item === "number" && Number.isFinite(item));
   });
-  if (graph.graphType === "stacked-bar") {
-    categoryKeys.forEach((key) => plottedValues.push(graph.points.filter((point) => pointKey(point) === key && point.value !== null).reduce((sum, point) => sum + Math.max(0, point.value || 0), 0)));
-  }
   const yMin = graph.config.yMin;
   const observedMax = plottedValues.length ? Math.max(...plottedValues) : 10;
   const yMax = graph.config.yMax && graph.config.yMax > yMin
     ? graph.config.yMax
     : Math.max(yMin + 1, Math.ceil(observedMax / 10) * 10 || 10);
   const y = (value: number) => margin.top + innerHeight - ((value - yMin) / (yMax - yMin)) * innerHeight;
-  const x = (key: string) => {
-    const index = Math.max(0, categoryKeys.indexOf(key));
-    if (isColumn) return margin.left + (index + .5) * (innerWidth / Math.max(1, categoryKeys.length));
-    return margin.left + (categoryKeys.length <= 1 ? innerWidth / 2 : horizontalInset + index * (innerWidth - horizontalInset * 2) / (categoryKeys.length - 1));
+  const x = (label: string) => {
+    const index = Math.max(0, labels.indexOf(label));
+    if (graph.graphType === "bar") return margin.left + (index + .5) * (innerWidth / Math.max(1, labels.length));
+    return margin.left + (labels.length <= 1 ? innerWidth / 2 : horizontalInset + index * (innerWidth - horizontalInset * 2) / (labels.length - 1));
   };
   const phaseRanges = (() => {
-    const boundaries = [...new Set(graph.phases.map((phase) => phase.afterIndex))].sort((a, b) => a - b);
+    const boundaries = [...graph.phases].sort((a, b) => a.afterIndex - b.afterIndex);
     const ranges: Array<{ start: number; end: number; label: string }> = [];
     let start = 0;
-    boundaries.forEach((afterIndex) => {
-      const end = Math.max(start, Math.min(categoryKeys.length - 1, afterIndex - 1));
-      if (start <= end) ranges.push({ start, end, label: "" });
-      start = Math.min(categoryKeys.length, afterIndex);
+    boundaries.forEach((phase, index) => {
+      const end = Math.max(start, Math.min(labels.length - 1, phase.afterIndex - 1));
+      ranges.push({ start, end, label: index === 0 ? phase.beforeLabel : boundaries[index - 1].afterLabel });
+      start = Math.min(labels.length - 1, phase.afterIndex);
     });
-    if (categoryKeys.length && start < categoryKeys.length) ranges.push({ start, end: categoryKeys.length - 1, label: "" });
-    if (categoryKeys.length && !ranges.length) ranges.push({ start: 0, end: categoryKeys.length - 1, label: "" });
+    if (labels.length) ranges.push({ start, end: labels.length - 1, label: boundaries.length ? boundaries[boundaries.length - 1].afterLabel : "" });
     return ranges;
   })();
   const phaseBoundaryIndices = new Set(graph.graphType === "line" ? graph.phases.map((phase) => phase.afterIndex) : []);
   const tickCount = 5;
-  const xBand = categoryKeys.length ? innerWidth / categoryKeys.length : innerWidth;
+  const xBand = labels.length ? innerWidth / labels.length : innerWidth;
   const desc = `${graph.title}. ${GRAPH_TYPE_LABELS[graph.graphType]}. ${graph.points.length} registros. Eje vertical: ${graph.yAxisLabel}.`;
-  const trendInsufficient = graph.config.showTrend ? series.reduce((count, name) => count + phaseRanges.filter((range) => {
-    const values = graph.points.filter((point) => (point.series || "Datos") === name && point.value !== null)
-      .filter((point) => { const index = categoryKeys.indexOf(pointKey(point)); return index >= range.start && index <= range.end; });
-    return values.length > 0 && values.length < 2;
-  }).length, 0) : 0;
 
   return <svg id={`graph-svg-${graph.id}`} className="analytic-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`graph-title-${graph.id} graph-desc-${graph.id}`}>
     <title id={`graph-title-${graph.id}`}>{graph.title}</title>
@@ -642,8 +514,6 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
     <rect width={width} height={height} fill="#ffffff" rx="12"/>
     <text x={width / 2} y="31" textAnchor="middle" fontSize="20" fontWeight="800" fill="#14241e">{graph.title}</text>
     <text x={width / 2} y="54" textAnchor="middle" fontSize="11" fill="#64726c">{graph.measurement} · {graph.graphType === "line" ? LINE_DESIGN_LABELS[graph.designType] : GRAPH_TYPE_LABELS[graph.graphType]}</text>
-    {metadata.map((line, index) => <text key={`metadata-${index}`} x={width / 2} y={72 + index * 12} textAnchor="middle" fontSize="9" fill="#6b7772">{line.length > 150 ? `${line.slice(0, 149)}…` : line}</text>)}
-    {trendInsufficient > 0 && <text x={width - margin.right} y={margin.top - 12} textAnchor="end" fontSize="10" fontWeight="700" fill="#9b6a2e">Tendencia no calculada: {trendInsufficient} fase{trendInsufficient === 1 ? "" : "s"} con menos de 2 puntos</text>}
 
     {Array.from({ length: tickCount + 1 }, (_, index) => {
       const value = yMin + (yMax - yMin) * index / tickCount;
@@ -655,11 +525,11 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
     })}
     <line x1={margin.left} x2={margin.left} y1={margin.top} y2={margin.top + innerHeight} stroke="#22352d" strokeWidth="2"/>
     <line x1={margin.left} x2={width - margin.right} y1={margin.top + innerHeight} y2={margin.top + innerHeight} stroke="#22352d" strokeWidth="2"/>
-    {categoryKeys.map((key, index) => { const label = categoryLabel.get(key) || key; return <g key={`x-${key}-${index}`}>
+    {labels.map((label, index) => <g key={`x-${label}-${index}`}>
       <title>{label}</title>
-      <line x1={x(key)} x2={x(key)} y1={margin.top + innerHeight} y2={margin.top + innerHeight + 6} stroke="#22352d"/>
-      <text transform={rotateXLabels ? `translate(${x(key) - 2} ${margin.top + innerHeight + 20}) rotate(-45)` : undefined} x={rotateXLabels ? undefined : x(key)} y={rotateXLabels ? undefined : margin.top + innerHeight + 22} textAnchor={rotateXLabels ? "end" : "middle"} fontSize="10" fill="#57665f">{label.length > 20 ? `${label.slice(0, 19)}…` : label}</text>
-    </g>; })}
+      <line x1={x(label)} x2={x(label)} y1={margin.top + innerHeight} y2={margin.top + innerHeight + 6} stroke="#22352d"/>
+      <text transform={rotateXLabels ? `translate(${x(label) - 2} ${margin.top + innerHeight + 20}) rotate(-45)` : undefined} x={rotateXLabels ? undefined : x(label)} y={rotateXLabels ? undefined : margin.top + innerHeight + 22} textAnchor={rotateXLabels ? "end" : "middle"} fontSize="10" fill="#57665f">{label.length > 20 ? `${label.slice(0, 19)}…` : label}</text>
+    </g>)}
     <text x={margin.left + innerWidth / 2} y={height - 18} textAnchor="middle" fontSize="12" fontWeight="700" fill="#33473e">{graph.xAxisLabel}</text>
     <text transform={`translate(24 ${margin.top + innerHeight / 2}) rotate(-90)`} textAnchor="middle" fontSize="12" fontWeight="700" fill="#33473e">{graph.yAxisLabel}</text>
 
@@ -668,7 +538,7 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
       const barWidth = Math.max(6, groupWidth / Math.max(series.length, 1) - 4);
       return graph.points.filter((point) => point.value !== null).map((point) => {
         const seriesIndex = Math.max(0, series.indexOf(point.series || "Datos"));
-        const categoryCenter = x(pointKey(point));
+        const categoryCenter = x(point.label);
         const px = categoryCenter - groupWidth / 2 + seriesIndex * (barWidth + 4);
         const py = y(point.value as number);
         const baseY = y(Math.max(0, yMin));
@@ -678,21 +548,8 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
           {(graph.config.showValues || series.length === 1) && <text x={px + barWidth / 2} y={Math.min(py, baseY) - 7} textAnchor="middle" fontSize="10" fontWeight="800" fill="#33473e">{point.value}</text>}
         </g>;
       });
-    })() : graph.graphType === "stacked-bar" ? categoryKeys.flatMap((key) => {
-      let running = Math.max(0, yMin);
-      return series.flatMap((name, seriesIndex) => {
-        const point = graph.points.find((item) => pointKey(item) === key && (item.series || "Datos") === name && item.value !== null);
-        if (!point || point.value === null || point.value < 0) return [];
-        const start = running;
-        running += point.value;
-        const py = y(running);
-        const baseY = y(start);
-        const barWidth = Math.min(xBand * .64, 92);
-        return [<g key={point.id}><title>{pointTooltip(point, point.value)}</title><rect x={x(key) - barWidth / 2} y={py} width={barWidth} height={Math.max(1, baseY - py)} fill={COLORS[seriesIndex % COLORS.length]}/>{graph.config.showValues && <text x={x(key)} y={(py + baseY) / 2 + 3} textAnchor="middle" fontSize="9" fontWeight="800" fill="#fff">{point.value}</text>}</g>];
-      });
-    }) : series.map((name, seriesIndex) => {
-      const source = graph.points.filter((point) => (point.series || "Datos") === name)
-        .sort((a, b) => categoryKeys.indexOf(pointKey(a)) - categoryKeys.indexOf(pointKey(b)));
+    })() : series.map((name, seriesIndex) => {
+      const source = graph.points.filter((point) => (point.series || "Datos") === name);
       const plotted = source.map((point) => ({
         point,
         value: graph.graphType === "cumulative" ? cumulativeById.get(point.id) ?? null : point.value,
@@ -701,7 +558,7 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
       let currentSegment: Array<{ point: GraphPoint; value: number }> = [];
       source.forEach((point) => {
         const value = graph.graphType === "cumulative" ? cumulativeById.get(point.id) ?? null : point.value;
-        const labelIndex = categoryKeys.indexOf(pointKey(point));
+        const labelIndex = labels.indexOf(point.label);
         if (currentSegment.length && phaseBoundaryIndices.has(labelIndex)) {
           segments.push(currentSegment);
           currentSegment = [];
@@ -714,56 +571,45 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
       if (currentSegment.length) segments.push(currentSegment);
       const color = COLORS[seriesIndex % COLORS.length];
       return <g key={name}>
-        {graph.graphType !== "scatter" && graph.config.connectPoints && segments.map((segment, segmentIndex) => segment.length > 1 ? <path key={`${name}-segment-${segmentIndex}`} d={segment.map((item, index) => `${index ? "L" : "M"} ${x(pointKey(item.point))} ${y(item.value)}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/> : null)}
+        {graph.config.connectPoints && segments.map((segment, segmentIndex) => segment.length > 1 ? <path key={`${name}-segment-${segmentIndex}`} d={segment.map((item, index) => `${index ? "L" : "M"} ${x(item.point.label)} ${y(item.value)}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/> : null)}
         {plotted.map((item) => <g key={item.point.id}>
           <title>{pointTooltip(item.point, item.value)}</title>
-          {graph.config.showPoints && markerShape(MARKERS[seriesIndex % MARKERS.length], x(pointKey(item.point)) + (graph.graphType === "scatter" ? (seriesIndex - (series.length - 1) / 2) * 5 : 0), y(item.value), color, `${item.point.id}-mark`)}
-          {graph.config.showValues && <text x={x(pointKey(item.point))} y={y(item.value) - 12} textAnchor="middle" fontSize="10" fontWeight="800" fill={color}>{item.value}</text>}
+          {graph.config.showPoints && markerShape(MARKERS[seriesIndex % MARKERS.length], x(item.point.label), y(item.value), color, `${item.point.id}-mark`)}
+          {graph.config.showValues && <text x={x(item.point.label)} y={y(item.value) - 12} textAnchor="middle" fontSize="10" fontWeight="800" fill={color}>{item.value}</text>}
         </g>)}
         {graph.config.showTrend && phaseRanges.map((range, index) => {
-          const inRange = plotted.map((item) => ({ x: categoryKeys.indexOf(pointKey(item.point)), value: item.value })).filter((item) => item.x >= range.start && item.x <= range.end);
+          const inRange = plotted.map((item) => ({ x: labels.indexOf(item.point.label), value: item.value })).filter((item) => item.x >= range.start && item.x <= range.end);
           const fit = regression(inRange);
           if (!fit || inRange.length < 2) return null;
           const first = inRange[0].x;
           const last = inRange[inRange.length - 1].x;
-          return <line key={`${name}-trend-${index}`} x1={x(categoryKeys[first])} x2={x(categoryKeys[last])} y1={y(fit.slope * first + fit.intercept)} y2={y(fit.slope * last + fit.intercept)} stroke={color} strokeWidth="1.5" strokeDasharray="4 4" opacity=".75"/>;
+          return <line key={`${name}-trend-${index}`} x1={x(labels[first])} x2={x(labels[last])} y1={y(fit.slope * first + fit.intercept)} y2={y(fit.slope * last + fit.intercept)} stroke={color} strokeWidth="1.5" strokeDasharray="4 4" opacity=".75"/>;
         })}
         {graph.config.showMean && phaseRanges.map((range, index) => {
-          const values = plotted.filter((item) => { const pointIndex = categoryKeys.indexOf(pointKey(item.point)); return pointIndex >= range.start && pointIndex <= range.end; }).map((item) => item.value);
+          const values = plotted.filter((item) => { const pointIndex = labels.indexOf(item.point.label); return pointIndex >= range.start && pointIndex <= range.end; }).map((item) => item.value);
           if (!values.length) return null;
           const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-          return <line key={`${name}-mean-${index}`} x1={x(categoryKeys[range.start])} x2={x(categoryKeys[range.end])} y1={y(mean)} y2={y(mean)} stroke={color} strokeWidth="2" strokeDasharray="8 5" opacity=".65"/>;
+          return <line key={`${name}-mean-${index}`} x1={x(labels[range.start])} x2={x(labels[range.end])} y1={y(mean)} y2={y(mean)} stroke={color} strokeWidth="2" strokeDasharray="8 5" opacity=".65"/>;
         })}
       </g>;
     })}
 
-    {graph.graphType === "line" && graph.config.showCriterion && series.map((name, seriesIndex) => {
-      const source = graph.points.filter((point) => (point.series || "Datos") === name)
-        .sort((a, b) => categoryKeys.indexOf(pointKey(a)) - categoryKeys.indexOf(pointKey(b)));
-      const criteria = source.filter((point) => point.criterion !== null);
-      if (!criteria.length) return null;
-      const parts: string[] = [];
-      let open = false;
-      source.forEach((point) => {
-        if (point.criterion === null) { open = false; return; }
-        const px = x(pointKey(point));
-        const py = y(point.criterion as number);
-        if (!open || phaseBoundaryIndices.has(categoryKeys.indexOf(pointKey(point)))) parts.push(`M ${px} ${py}`);
-        else parts.push(`H ${px} V ${py}`);
-        open = true;
-      });
-      const latest = criteria.at(-1)!;
-      return <g key={`criterion-${name}`}><path d={parts.join(" ")} fill="none" stroke="#b34f55" strokeWidth="2" strokeDasharray="9 5" opacity={series.length > 1 ? .68 + seriesIndex * .04 : 1} aria-label={`Criterio de ${name}`}/>{latest.criterionProgress && <text x={Math.min(width - margin.right - 4, x(pointKey(latest)) + 8)} y={y(latest.criterion as number) - 8} textAnchor="end" fontSize="10" fontWeight="800" fill="#a14851">Criterio · {latest.criterionProgress.label}</text>}</g>;
-    })}
+    {graph.graphType === "line" && graph.designType === "changing-criterion" && (() => {
+      const criterion = graph.points.filter((point) => point.criterion !== null);
+      if (!criterion.length) return null;
+      let path = `M ${x(criterion[0].label)} ${y(criterion[0].criterion as number)}`;
+      criterion.slice(1).forEach((point) => { path += ` H ${x(point.label)} V ${y(point.criterion as number)}`; });
+      return <path d={path} fill="none" stroke="#b34f55" strokeWidth="2.5" strokeDasharray="9 5" aria-label="Criterio programado"/>;
+    })()}
 
-    {graph.graphType === "line" && [...new Map([...graph.phases].sort((a, b) => a.afterIndex - b.afterIndex).map((phase) => [phase.afterIndex, graph.phases.filter((item) => item.afterIndex === phase.afterIndex)])).entries()].map(([afterIndex, phases]) => {
-      if (!categoryKeys.length || afterIndex < 1 || afterIndex > categoryKeys.length) return null;
-      const px = afterIndex === categoryKeys.length
-        ? Math.min(width - margin.right, x(categoryKeys[categoryKeys.length - 1]) + Math.max(14, horizontalInset / 2))
-        : (x(categoryKeys[afterIndex - 1]) + x(categoryKeys[afterIndex])) / 2;
-      const label = phases.map((phase) => `${phase.targetLabel ? `${phase.targetLabel}: ` : ""}${phase.afterLabel}`).join(" · ");
-      return <g key={`phase-${afterIndex}`}><line x1={px} x2={px} y1={margin.top - 15} y2={margin.top + innerHeight} stroke="#6c7771" strokeWidth="1.5" strokeDasharray="6 5"/><text transform={`translate(${px + 4} ${margin.top - 20}) rotate(-35)`} textAnchor="start" fontSize="9" fontWeight="800" fill="#46554e">{label.length > 70 ? `${label.slice(0, 69)}…` : label}</text></g>;
+    {graph.graphType === "line" && [...graph.phases].sort((a, b) => a.afterIndex - b.afterIndex).map((phase) => {
+      if (!labels.length || phase.afterIndex >= labels.length) return null;
+      const left = x(labels[phase.afterIndex - 1]);
+      const right = x(labels[phase.afterIndex]);
+      const px = (left + right) / 2;
+      return <line key={phase.id} x1={px} x2={px} y1={margin.top - 15} y2={margin.top + innerHeight} stroke="#6c7771" strokeWidth="1.5" strokeDasharray="6 5"/>;
     })}
+    {graph.graphType === "line" && phaseRanges.map((range, index) => range.label ? <text key={`phase-label-${index}`} x={(x(labels[range.start]) + x(labels[range.end])) / 2} y={margin.top - 27} textAnchor="middle" fontSize="11" fontWeight="800" fill="#46554e">{range.label}</text> : null)}
 
     {showLegend && graph.config.showLegend && series.length > 1 && <g transform={`translate(${margin.left} ${rotateXLabels ? 76 : height - 48})`}>
       {series.map((name, index) => <g key={`legend-${name}`} transform={`translate(${index * Math.min(180, innerWidth / series.length)} 0)`}>
@@ -772,216 +618,6 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
       </g>)}
     </g>}
   </svg>;
-}
-
-const CONFIG_SOURCE_LABELS: Record<Exclude<GraphDataSource, "manual">, string> = {
-  sessions: "Sesiones",
-  trials: "Ensayo por ensayo",
-  abc: "Incidentes ABC",
-};
-const CONFIG_PERIOD_LABELS: Record<GraphPeriod, string> = {
-  today: "Hoy", "7d": "Últimos 7 días", "30d": "Últimos 30 días", "3m": "Últimos 3 meses", "6m": "Últimos 6 meses", all: "Todo", custom: "Rango personalizado",
-};
-const CONFIG_X_LABELS: Record<GraphXAxis, string> = { date: "Fecha", session: "Sesión", target: "Objetivo", prompt: "Nivel de ayuda", therapist: "Terapeuta" };
-const CONFIG_Y_LABELS: Record<GraphYAxis, string> = { percentage_correct: "% correcto", count: "Conteo", rate: "Tasa", duration: "Duración" };
-const CONFIG_GROUP_LABELS: Record<GraphGrouping, string> = { none: "Sin agrupación", program: "Programa", target: "Objetivo", prompt: "Nivel de ayuda", therapist: "Terapeuta" };
-const CONFIG_RATE_LABELS: Record<GraphRateUnit, string> = { minute: "Por minuto", hour: "Por hora", day: "Por día" };
-const CONFIG_STATE_LABELS: Record<string, string> = { baseline: "Línea base", acquisition: "Adquisición", generalization: "Masterizado", maintenance: "Generalizado", closed: "Cerrado" };
-
-function newConfigurableConfig(initialProgramId?: string | null): GraphConfig {
-  return {
-    ...DEFAULT_GRAPH_CONFIG,
-    version: 2,
-    dataSource: "sessions",
-    period: "30d",
-    xAxis: "date",
-    yAxis: "percentage_correct",
-    grouping: "target",
-    rateUnit: "hour",
-    filters: { programIds: initialProgramId ? [initialProgramId] : [], targetIds: [], targetStates: [], therapistIds: [] },
-    sourceTargetIds: [],
-    showMean: true,
-    showTrend: true,
-    showCriterion: true,
-    exportMetadata: [],
-    warnings: [],
-  };
-}
-
-function ConfigurableGraphWorkspace({
-  profiles,
-  selectedProfileId,
-  initialProgramId,
-  canManage,
-  notify,
-  onSaved,
-}: {
-  profiles: LinkableProfile[];
-  selectedProfileId: string;
-  initialProgramId: string | null;
-  canManage: boolean;
-  notify: (text: string) => void;
-  onSaved: (graph: AnalyticGraph) => void;
-}) {
-  const initialProfile = selectedProfileId !== "all" ? selectedProfileId : profiles.find((profile) => profile.status === "active")?.id || "";
-  const [profileId, setProfileId] = useState(initialProfile);
-  const effectiveProfileId = selectedProfileId !== "all" ? selectedProfileId : profileId;
-  const [dataset, setDataset] = useState<ConfigurableGraphDataset | null>(null);
-  const [loading, setLoading] = useState(Boolean(initialProfile));
-  const [error, setError] = useState("");
-  const [config, setConfig] = useState<GraphConfig>(() => newConfigurableConfig(initialProgramId));
-  const [graphType, setGraphType] = useState<GraphType>("line");
-  const [title, setTitle] = useState("Progreso clínico configurable");
-  const [objective, setObjective] = useState("Analizar el progreso con datos clínicos conectados al expediente.");
-  const [manualPhases, setManualPhases] = useState<PhaseBoundary[]>([]);
-  const [showTable, setShowTable] = useState(false);
-  const [controlsOpen, setControlsOpen] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [exporting, setExporting] = useState("");
-
-  useEffect(() => {
-    if (!effectiveProfileId) return;
-    const controller = new AbortController();
-    fetch(`/api/graph-data?profileId=${encodeURIComponent(effectiveProfileId)}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json() as ConfigurableGraphDataset & { error?: string };
-        if (!response.ok) throw new Error(data.error || "No se pudieron preparar los datos clínicos.");
-        setDataset(data);
-        setConfig((current) => ({
-          ...current,
-          filters: {
-            ...current.filters,
-            programIds: initialProgramId && data.programs.some((program) => program.id === initialProgramId) ? [initialProgramId] : current.filters.programIds.filter((id) => data.programs.some((program) => program.id === id)),
-            targetIds: current.filters.targetIds.filter((id) => data.programs.some((program) => program.targets.some((target) => target.id === id))),
-            therapistIds: current.filters.therapistIds.filter((id) => data.professionals.some((professional) => professional.id === id)),
-          },
-        }));
-      })
-      .catch((cause: unknown) => {
-        if (!(cause instanceof DOMException && cause.name === "AbortError")) setError(cause instanceof Error ? cause.message : "No se pudieron preparar los datos clínicos.");
-      })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [effectiveProfileId, initialProgramId]);
-
-  const selectedPrograms = dataset?.programs.filter((program) => !config.filters.programIds.length || config.filters.programIds.includes(program.id)) || [];
-  const availableTargets = selectedPrograms.flatMap((program) => program.targets);
-  const xAxisLabel = CONFIG_X_LABELS[config.xAxis];
-  const yAxisLabel = config.yAxis === "rate" ? `${CONFIG_Y_LABELS.rate} · ${CONFIG_RATE_LABELS[config.rateUnit].toLowerCase()}` : CONFIG_Y_LABELS[config.yAxis];
-  const graph = useMemo(() => dataset ? buildConfigurableGraph({
-    id: `configurable-${dataset.profile.id}`,
-    dataset,
-    config,
-    graphType,
-    title,
-    objective,
-    measurement: CONFIG_SOURCE_LABELS[config.dataSource as Exclude<GraphDataSource, "manual">],
-    xAxisLabel,
-    yAxisLabel,
-    manualPhases,
-  }) : null, [dataset, config, graphType, title, objective, xAxisLabel, yAxisLabel, manualPhases]);
-  const categoryKeys = graph ? uniqueInOrder(graph.points.map((point) => point.xKey || point.label)) : [];
-
-  function patchConfig(patch: Partial<GraphConfig>) {
-    setConfig((current) => ({ ...current, ...patch }));
-  }
-
-  function patchFilters(key: keyof GraphConfig["filters"], value: string) {
-    setConfig((current) => {
-      const values = current.filters[key];
-      return { ...current, filters: { ...current.filters, [key]: values.includes(value) ? values.filter((item) => item !== value) : [...values, value] } };
-    });
-    setManualPhases([]);
-  }
-
-  function changeSource(source: Exclude<GraphDataSource, "manual">) {
-    if (source === "abc") {
-      setGraphType("bar");
-      patchConfig({ dataSource: source, xAxis: "date", yAxis: "count", grouping: "none", showCriterion: false });
-    } else if (source === "trials") {
-      setGraphType("line");
-      patchConfig({ dataSource: source, xAxis: "session", yAxis: "percentage_correct", grouping: "target", showCriterion: true });
-    } else {
-      setGraphType("line");
-      patchConfig({ dataSource: source, xAxis: "date", yAxis: "percentage_correct", grouping: "target", showCriterion: true });
-    }
-    setManualPhases([]);
-  }
-
-  function changeGraphType(type: GraphType) {
-    setGraphType(type);
-    if (type === "cumulative") {
-      patchConfig({ dataSource: "sessions", xAxis: "date", yAxis: "count", grouping: "program", showCriterion: false, showMean: false, showTrend: false });
-      setManualPhases([]);
-    }
-  }
-
-  function addManualPhase() {
-    if (categoryKeys.length < 2) { notify("Se necesitan al menos dos posiciones para agregar una fase manual."); return; }
-    const used = new Set(manualPhases.map((phase) => phase.afterIndex));
-    const afterIndex = Array.from({ length: categoryKeys.length - 1 }, (_, index) => index + 1).find((index) => !used.has(index));
-    if (!afterIndex) { notify("Ya existe una fase manual entre cada par de posiciones."); return; }
-    setManualPhases((current) => [...current, { id: graphLocalId(), afterIndex, beforeLabel: "Fase anterior", afterLabel: "Fase siguiente", boundaryKey: categoryKeys[afterIndex], origin: "manual" }]);
-  }
-
-  function updateManualPhase(id: string, patch: Partial<PhaseBoundary>) {
-    setManualPhases((current) => current
-      .map((phase) => phase.id === id ? { ...phase, ...patch } : phase)
-      .sort((a, b) => a.afterIndex - b.afterIndex));
-  }
-
-  async function saveConfiguration() {
-    if (!graph || !canManage) return;
-    if (!title.trim()) { notify("Escribe un nombre para guardar la configuración."); return; }
-    setSaving(true);
-    try {
-      const response = await fetch("/api/graphs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...graph, id: undefined, phases: graph.phases }) });
-      const data = await response.json() as { graph?: Record<string, unknown>; error?: string };
-      if (!response.ok || !data.graph) throw new Error(data.error || "No se pudo guardar la configuración.");
-      const saved = normalizeGraph(data.graph);
-      onSaved(saved);
-      notify("Configuración guardada con sus fuentes, ejes, filtros, agrupación y fases.");
-    } catch (cause) { notify(cause instanceof Error ? cause.message : "No se pudo guardar la configuración."); }
-    finally { setSaving(false); }
-  }
-
-  async function runExport(kind: "png" | "pdf" | "xlsx") {
-    if (!graph) return;
-    setExporting(kind);
-    try {
-      if (kind === "png") await exportPng(graph);
-      else if (kind === "pdf") await exportPdf(graph);
-      else await exportExcel(graph);
-      notify(`Exportación ${kind === "xlsx" ? "Excel" : kind.toUpperCase()} generada con período y filtros.`);
-    } catch (cause) { notify(cause instanceof Error ? cause.message : "No se pudo exportar la gráfica."); }
-    finally { setExporting(""); }
-  }
-
-  return <section className="formation-panel configurable-graph-shell">
-    <div className="configurable-heading"><div><p className="section-kicker">Gráfica clínica unificada</p><h2>Configura la pregunta, no una plantilla fija</h2><p>Sesiones, ensayos e incidentes ABC utilizan el mismo expediente. Un cero observado permanece como dato y lo no medido permanece como hueco.</p></div><div><button className="secondary-formation-button" onClick={() => setControlsOpen((value) => !value)}><SlidersHorizontal size={15}/>{controlsOpen ? "Ocultar controles" : "Configurar"}</button></div></div>
-    <div className="configurable-profile-row"><label><span>Niño</span><select value={effectiveProfileId} disabled={selectedProfileId !== "all"} onChange={(event) => { const next = event.target.value; setProfileId(next); setDataset(null); setLoading(Boolean(next)); setError(""); setConfig(newConfigurableConfig(null)); setManualPhases([]); }}><option value="">Selecciona un niño</option>{profiles.filter((profile) => profile.status === "active").map((profile) => <option key={profile.id} value={profile.id}>{profile.fullName} · {profile.site}</option>)}</select></label>{dataset?.capabilities.privacyMode === "assigned_child_aggregate_own_raw" && <div className="graph-privacy-banner"><LockKeyhole size={16}/><span>Ves el progreso general del niño. El detalle identificable y los ensayos se limitan a tus propias sesiones.</span></div>}</div>
-    {loading ? <div className="empty-state automatic-empty"><LoaderCircle className="spin" size={27}/><strong>Preparando una sola fuente clínica…</strong></div> : error ? <div className="empty-state automatic-empty"><CircleDashed size={27}/><strong>No se pudieron cargar los datos</strong><p>{error}</p></div> : !dataset ? <div className="empty-state automatic-empty"><CircleDashed size={27}/><strong>Selecciona un niño</strong><p>La configuración se vinculará a su expediente y respetará tu alcance.</p></div> : <div className={`configurable-layout ${controlsOpen ? "with-controls" : ""}`}>
-      {controlsOpen && <aside className="configurable-controls">
-        <fieldset><legend>Configuración guardable</legend><label><span>Nombre</span><input value={title} maxLength={140} onChange={(event) => setTitle(event.target.value)}/></label><label><span>Objetivo del análisis</span><textarea value={objective} onChange={(event) => setObjective(event.target.value)}/></label></fieldset>
-        <fieldset><legend>Período</legend><select value={config.period} onChange={(event) => patchConfig({ period: event.target.value as GraphPeriod })}>{Object.entries(CONFIG_PERIOD_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>{config.period === "custom" && <div className="configurable-date-grid"><label><span>Desde</span><input type="date" value={config.dateFrom} onChange={(event) => patchConfig({ dateFrom: event.target.value })}/></label><label><span>Hasta</span><input type="date" value={config.dateTo} onChange={(event) => patchConfig({ dateTo: event.target.value })}/></label></div>}</fieldset>
-        <fieldset><legend>Datos</legend><div className="configurable-choice-grid">{(["sessions", "trials", "abc"] as const).map((source) => <button type="button" className={config.dataSource === source ? "active" : ""} disabled={source === "abc" ? !dataset.capabilities.canViewAbcSource : !dataset.capabilities.canViewSessionSource} onClick={() => changeSource(source)} key={source}>{CONFIG_SOURCE_LABELS[source]}</button>)}</div></fieldset>
-        <fieldset><legend>Ejes y agrupación</legend><label><span>Eje horizontal</span><select value={config.xAxis} onChange={(event) => { patchConfig({ xAxis: event.target.value as GraphXAxis }); setManualPhases([]); }}>{Object.entries(CONFIG_X_LABELS).filter(([value]) => dataset.capabilities.canCompareTherapists || value !== "therapist").map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>Eje vertical</span><select value={config.yAxis} onChange={(event) => patchConfig({ yAxis: event.target.value as GraphYAxis })}>{Object.entries(CONFIG_Y_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>{config.yAxis === "rate" && <label><span>Unidad de tasa</span><select value={config.rateUnit} onChange={(event) => patchConfig({ rateUnit: event.target.value as GraphRateUnit })}>{Object.entries(CONFIG_RATE_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>}<label><span>Agrupar por</span><select value={config.grouping} onChange={(event) => patchConfig({ grouping: event.target.value as GraphGrouping })}>{Object.entries(CONFIG_GROUP_LABELS).filter(([value]) => dataset.capabilities.canCompareTherapists || value !== "therapist").map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label></fieldset>
-        <fieldset><legend>Filtros · programas</legend><div className="configurable-filter-list">{dataset.programs.map((program) => <label key={program.id}><input type="checkbox" checked={config.filters.programIds.includes(program.id)} onChange={() => patchFilters("programIds", program.id)}/><span><strong>{program.name}</strong><small>{program.status === "active" ? "Activo" : "Histórico"}</small></span></label>)}</div><small>Sin selección explícita se incluyen todos.</small></fieldset>
-        <fieldset><legend>Filtros · objetivos</legend><div className="configurable-filter-list targets">{availableTargets.map((target) => <label key={target.id}><input type="checkbox" checked={config.filters.targetIds.includes(target.id)} onChange={() => patchFilters("targetIds", target.id)}/><span><strong>{target.code} · {target.name}</strong><small>{CONFIG_STATE_LABELS[target.state]} · {target.unitLabel}</small></span></label>)}</div><small>Sin selección explícita se incluyen todos los objetivos de los programas elegidos.</small></fieldset>
-        <fieldset><legend>Estado del objetivo</legend><div className="configurable-choice-grid compact">{Object.entries(CONFIG_STATE_LABELS).map(([value, label]) => <button type="button" key={value} className={config.filters.targetStates.includes(value) ? "active" : ""} onClick={() => patchFilters("targetStates", value)}>{label}</button>)}</div></fieldset>
-        {dataset.capabilities.canCompareTherapists && <fieldset><legend>Terapeuta</legend><div className="configurable-filter-list">{dataset.professionals.map((professional) => <label key={professional.id}><input type="checkbox" checked={config.filters.therapistIds.includes(professional.id)} onChange={() => patchFilters("therapistIds", professional.id)}/><span><strong>{professional.name}</strong></span></label>)}</div><small>Sin selección explícita se incluyen todos dentro de tu alcance.</small></fieldset>}
-        <fieldset><legend>Tipo</legend><div className="configurable-type-grid">{(["line", "bar", "stacked-bar", "scatter", "cumulative"] as GraphType[]).map((type) => <button type="button" className={graphType === type ? "active" : ""} key={type} onClick={() => changeGraphType(type)}>{type === "line" ? <LineChart size={15}/> : type === "cumulative" ? <TrendingUp size={15}/> : <BarChart3 size={15}/>}<span>{GRAPH_TYPE_LABELS[type]}</span></button>)}</div></fieldset>
-        {graphType === "line" && <fieldset><legend>Validez conductual</legend><div className="automatic-toggle-grid"><label><input type="checkbox" checked={config.showMean} onChange={(event) => patchConfig({ showMean: event.target.checked })}/><span>Promedio por fase</span></label><label><input type="checkbox" checked={config.showTrend} onChange={(event) => patchConfig({ showTrend: event.target.checked })}/><span>Tendencia por fase</span></label><label><input type="checkbox" checked={config.showCriterion} onChange={(event) => patchConfig({ showCriterion: event.target.checked })}/><span>Criterio y avance</span></label><label><input type="checkbox" checked={config.connectPoints} onChange={(event) => patchConfig({ connectPoints: event.target.checked })}/><span>Conectar dentro de fase</span></label></div><button type="button" className="automatic-add-phase" onClick={addManualPhase}><Plus size={14}/> Añadir fase manual</button>{graph?.phases.length ? <div className="configurable-phase-list">{graph.phases.map((phase) => <article key={phase.id}><span className={phase.origin === "automatic" ? "automatic" : "manual"}>{phase.origin === "automatic" ? "Automática" : "Manual"}</span>{phase.origin === "manual" ? <div className="configurable-phase-fields"><label><small>Ubicación</small><select value={phase.afterIndex} onChange={(event) => { const afterIndex = Number(event.target.value); updateManualPhase(phase.id, { afterIndex, boundaryKey: categoryKeys[afterIndex] }); }}>{categoryKeys.slice(1).map((key, index) => <option value={index + 1} key={key}>Después de {graph.points.find((point) => (point.xKey || point.label) === categoryKeys[index])?.label || categoryKeys[index]}</option>)}</select></label><label><small>Antes</small><input value={phase.beforeLabel} maxLength={80} onChange={(event) => updateManualPhase(phase.id, { beforeLabel: event.target.value })}/></label><label><small>Después</small><input value={phase.afterLabel} maxLength={80} onChange={(event) => updateManualPhase(phase.id, { afterLabel: event.target.value })}/></label></div> : <div><strong>{phase.targetLabel || `${phase.beforeLabel} → ${phase.afterLabel}`}</strong><small>{phase.beforeLabel} → {phase.afterLabel} · posición {phase.afterIndex}</small></div>}{phase.origin === "manual" && <button type="button" aria-label="Eliminar fase manual" onClick={() => setManualPhases((current) => current.filter((item) => item.id !== phase.id))}><Trash2 size={13}/></button>}</article>)}</div> : null}</fieldset>}
-        <fieldset><legend>Presentación</legend><div className="automatic-toggle-grid"><label><input type="checkbox" checked={config.showGrid} onChange={(event) => patchConfig({ showGrid: event.target.checked })}/><span>Cuadrícula</span></label><label><input type="checkbox" checked={config.showPoints} onChange={(event) => patchConfig({ showPoints: event.target.checked })}/><span>Puntos</span></label><label><input type="checkbox" checked={config.showValues} onChange={(event) => patchConfig({ showValues: event.target.checked })}/><span>Valores</span></label><label><input type="checkbox" checked={config.showLegend} onChange={(event) => patchConfig({ showLegend: event.target.checked })}/><span>Leyenda</span></label><label><input type="checkbox" checked={showTable} onChange={(event) => setShowTable(event.target.checked)}/><span>Tabla</span></label></div></fieldset>
-        {canManage && <button className="primary-formation-button configurable-save" disabled={saving || !graph?.points.some((point) => point.value !== null)} onClick={saveConfiguration}>{saving ? <LoaderCircle className="spin" size={15}/> : <Save size={15}/>} Guardar configuración</button>}
-      </aside>}
-      <div className="configurable-stage">
-        <div className="automatic-chart-toolbar"><div><span className="automatic-view-label">{dataset.profile.fullName} · {dataset.profile.site}</span><strong>{title}</strong><small>{CONFIG_SOURCE_LABELS[config.dataSource as Exclude<GraphDataSource, "manual">]} · {CONFIG_PERIOD_LABELS[config.period]} · agrupado por {CONFIG_GROUP_LABELS[config.grouping].toLowerCase()}</small></div><div><button className="secondary-formation-button" disabled={Boolean(exporting) || !graph?.points.length} onClick={() => void runExport("png")}><FileImage size={15}/>{exporting === "png" ? "…" : "PNG"}</button><button className="secondary-formation-button" disabled={Boolean(exporting) || !graph?.points.length} onClick={() => void runExport("pdf")}><FileDown size={15}/>{exporting === "pdf" ? "…" : "PDF"}</button><button className="secondary-formation-button" disabled={Boolean(exporting) || !graph?.points.length} onClick={() => void runExport("xlsx")}><FileSpreadsheet size={15}/>{exporting === "xlsx" ? "…" : "Excel"}</button></div></div>
-        {graph?.config.warnings.length ? <div className="graph-validity-warnings">{graph.config.warnings.map((warning, index) => <p key={`${warning}-${index}`}><CircleDashed size={14}/><span>{warning}</span></p>)}</div> : null}
-        {graph?.points.some((point) => point.value !== null) ? <><div className="graph-canvas-scroll automatic-canvas"><GraphCanvas graph={graph} showLegend edgeInset density="large"/></div>{showTable && <div className="automatic-data-table-wrap"><div><strong>Datos utilizados</strong><span>{graph.points.filter((point) => point.value !== null).length} medidos · {graph.points.filter((point) => point.value === null).length} no medidos</span></div><div className="graph-data-scroll"><table className="automatic-data-table"><thead><tr><th>{xAxisLabel}</th><th>Agrupación</th><th>{yAxisLabel}</th><th>Criterio</th><th>Avance</th><th>Procedencia permitida</th></tr></thead><tbody>{graph.points.map((point) => <tr key={point.id}><td>{point.label}</td><td>{point.series}</td><td>{point.value ?? <em>No medido</em>}</td><td>{point.criterion ?? "—"}</td><td>{point.criterionProgress?.label || "—"}</td><td>{point.note || "Detalle restringido o no documentado"}</td></tr>)}</tbody></table></div></div>}</> : <div className="empty-state automatic-empty"><CircleDashed size={27}/><strong>No hay una serie válida con esta combinación</strong><p>Revisa las advertencias, permisos, período y filtros. La plataforma no inventará ceros, tiempos, prompts ni tendencias.</p></div>}
-      </div>
-    </div>}
-  </section>;
 }
 
 export default function GraphManager({
@@ -1014,8 +650,8 @@ export default function GraphManager({
   const [historyTarget, setHistoryTarget] = useState<AnalyticGraph | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [automaticType, setAutomaticType] = useState<AutomaticGraphType>("line");
-  const [automaticSource, setAutomaticSource] = useState<"evaluations" | "programs" | "legacy-programs">(selectedProfileId !== "all" || initialProgramId ? "programs" : "evaluations");
+  const [automaticType, setAutomaticType] = useState<GraphType>("line");
+  const [automaticSource, setAutomaticSource] = useState<"evaluations" | "programs">(selectedProfileId !== "all" || initialProgramId ? "programs" : "evaluations");
   const [automaticProfileId, setAutomaticProfileId] = useState("");
   const [automaticProgramId, setAutomaticProgramId] = useState("");
   const [automaticTargetIds, setAutomaticTargetIds] = useState<string[]>([]);
@@ -1171,7 +807,7 @@ export default function GraphManager({
     const target = program.targets.find((item) => item.id === config?.primaryTargetId) || program.targets[0];
     setAutomaticSource("programs");
     setAutomaticTargetIds(target ? [target.id] : []);
-    setAutomaticType(config?.graphType === "bar" || config?.graphType === "cumulative" ? config.graphType : "line");
+    setAutomaticType(config?.graphType || "line");
     setAutomaticDesign(config?.designType || "AB");
     setAutomaticShowPoints(config?.showPoints !== false);
     setAutomaticShowLegend(config?.showLegend !== false);
@@ -1207,7 +843,7 @@ export default function GraphManager({
   }, [initialProgramId]);
 
   useEffect(() => {
-    if (automaticSource !== "legacy-programs" || !effectiveAutomaticProgramId) return;
+    if (!effectiveAutomaticProgramId) return;
     const controller = new AbortController();
     fetch(`/api/intervention-programs?programId=${encodeURIComponent(effectiveAutomaticProgramId)}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
@@ -1224,57 +860,30 @@ export default function GraphManager({
     return () => controller.abort();
     // Program selection is the only data dependency; notification identity must not refetch clinical data.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveAutomaticProgramId, automaticSource]);
+  }, [effectiveAutomaticProgramId]);
 
   useEffect(() => {
     const saved = graphs.find((graph) => graph.id === selectedId);
-    if (!saved || saved.config.dataSource === "manual") return;
+    if (!saved || saved.config.dataSource !== "sessions" || !saved.linkedProgramId) return;
     const controller = new AbortController();
-    const configurable = saved.config.version === 2 && Boolean(saved.profileId);
-    const url = configurable
-      ? `/api/graph-data?profileId=${encodeURIComponent(saved.profileId || "")}`
-      : saved.linkedProgramId
-        ? `/api/intervention-programs?programId=${encodeURIComponent(saved.linkedProgramId)}`
-        : "";
-    if (!url) return;
-    fetch(url, { cache: "no-store", signal: controller.signal })
+    fetch(`/api/intervention-programs?programId=${encodeURIComponent(saved.linkedProgramId)}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
-        const data = await response.json() as (ConfigurableGraphDataset & { error?: string }) | { programs?: AutomaticProgram[]; sessions?: AutomaticProgramSession[]; error?: string };
-        if (!response.ok) throw new Error(data.error || "No se pudo actualizar la gráfica desde su fuente clínica.");
-        let refreshed: AnalyticGraph;
-        if (configurable) {
-          const dataset = data as ConfigurableGraphDataset;
-          if (!dataset.profile) throw new Error("La fuente clínica de esta configuración ya no está disponible.");
-          refreshed = buildConfigurableGraph({
-            id: saved.id,
-            dataset,
-            config: saved.config,
-            graphType: saved.graphType,
-            title: saved.title,
-            objective: saved.objective,
-            measurement: saved.measurement,
-            xAxisLabel: saved.xAxisLabel,
-            yAxisLabel: saved.yAxisLabel,
-            manualPhases: saved.phases.filter((phase) => phase.origin === "manual"),
-          });
-        } else {
-          const legacy = data as { programs?: AutomaticProgram[]; sessions?: AutomaticProgramSession[]; error?: string };
-          if (!legacy.programs?.[0]) throw new Error(legacy.error || "No se pudo actualizar la gráfica desde sus sesiones.");
-          refreshed = buildSessionGraph({
-            id: saved.id,
-            program: legacy.programs[0],
-            sessions: legacy.sessions || [],
-            targetIds: saved.config.sourceTargetIds,
-            graphType: saved.graphType,
-            designType: saved.designType,
-            title: saved.title,
-            objective: saved.objective,
-            xAxisLabel: saved.xAxisLabel,
-            yAxisLabel: saved.yAxisLabel,
-            config: saved.config,
-            phases: saved.phases,
-          });
-        }
+        const data = await response.json() as { programs?: AutomaticProgram[]; sessions?: AutomaticProgramSession[]; error?: string };
+        if (!response.ok || !data.programs?.[0]) throw new Error(data.error || "No se pudo actualizar la gráfica desde sus sesiones.");
+        const refreshed = buildSessionGraph({
+          id: saved.id,
+          program: data.programs[0],
+          sessions: data.sessions || [],
+          targetIds: saved.config.sourceTargetIds,
+          graphType: saved.graphType,
+          designType: saved.designType,
+          title: saved.title,
+          objective: saved.objective,
+          xAxisLabel: saved.xAxisLabel,
+          yAxisLabel: saved.yAxisLabel,
+          config: saved.config,
+          phases: saved.phases,
+        });
         setGraphs((current) => current.map((graph) => graph.id === saved.id ? {
           ...graph,
           ...refreshed,
@@ -1597,7 +1206,7 @@ export default function GraphManager({
 
   if (selected) {
     const readOnly = selected.status === "archived" || !canManage;
-    const automaticSelected = selected.config.dataSource !== "manual";
+    const automaticSelected = selected.config.dataSource === "sessions";
     const selectedProgramOptions = activeProgramOptions.filter((program) => !selected.profileId || program.profileId === selected.profileId);
     const selectedCycleOptions = cycleOptions.filter((cycle) => !selected.profileId || cycle.profileId === selected.profileId);
     return <>
@@ -1605,9 +1214,8 @@ export default function GraphManager({
         <button className="back-button" onClick={() => setSelectedId(null)}><ArrowLeft size={17}/> Biblioteca</button>
         <div><p className="section-kicker">Centro de análisis</p><h1>{selected.title}</h1><p>{selected.objective}</p></div>
         <div className="graph-header-actions">
-          <button className="secondary-formation-button" onClick={() => void exportPng(selected).catch((error: unknown) => notify(error instanceof Error ? error.message : "No se pudo exportar el PNG."))}><FileImage size={16}/> PNG</button>
-          <button className="secondary-formation-button" onClick={() => void exportPdf(selected).catch((error: unknown) => notify(error instanceof Error ? error.message : "No se pudo exportar el PDF."))}><FileDown size={16}/> PDF</button>
-          <button className="secondary-formation-button" onClick={() => void exportExcel(selected).catch((error: unknown) => notify(error instanceof Error ? error.message : "No se pudo exportar el Excel."))}><FileSpreadsheet size={16}/> Excel</button>
+          <button className="secondary-formation-button" onClick={() => exportCsv(selected)}><FileDown size={16}/> CSV</button>
+          <button className="secondary-formation-button" onClick={() => exportSvg(selected)}><Download size={16}/> SVG</button>
           {!readOnly && <button className="primary-formation-button" disabled={saving} onClick={saveGraph}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar</button>}
         </div>
       </div>
@@ -1689,7 +1297,7 @@ export default function GraphManager({
       <div className="automatic-graph-heading"><div><span className="automatic-source"><CircleDashed size={14}/> Fuente automática</span><h2>Evaluaciones registradas</h2></div><CheckCircle2 size={25}/></div>
       {automaticPackageOptions.length ? <>
         <div className="automatic-graph-tabs" role="tablist" aria-label="Gráficas automáticas">
-          {(Object.keys(AUTO_GRAPH_LABELS) as AutomaticGraphType[]).map((type) => <button role="tab" aria-selected={automaticType === type} className={automaticType === type ? "active" : ""} onClick={() => setAutomaticType(type)} key={type}>{type === "line" ? <LineChart size={17}/> : type === "bar" ? <BarChart3 size={17}/> : <TrendingUp size={17}/>}<span>{AUTO_GRAPH_LABELS[type]}</span></button>)}
+          {(Object.keys(AUTO_GRAPH_LABELS) as GraphType[]).map((type) => <button role="tab" aria-selected={automaticType === type} className={automaticType === type ? "active" : ""} onClick={() => setAutomaticType(type)} key={type}>{type === "line" ? <LineChart size={17}/> : type === "bar" ? <BarChart3 size={17}/> : <TrendingUp size={17}/>}<span>{AUTO_GRAPH_LABELS[type]}</span></button>)}
         </div>
         <div className="automatic-metrics">
           <article><small>Expedientes comparables</small><strong>{automatic.packageCycles.length}</strong><span>Mismo paquete, versión y ruta</span></article>
@@ -1729,17 +1337,7 @@ export default function GraphManager({
       </> : <div className="empty-state automatic-empty"><CircleDashed size={27}/><strong>Aún no existen evaluaciones vinculables</strong><p>Crea una evaluación desde un paquete y comienza a registrar targets. No tendrás que crear la gráfica por separado.</p></div>}
     </section>}
 
-    {automaticSource === "programs" && <ConfigurableGraphWorkspace
-      key={`${selectedProfileId}:${initialProgramId || "all"}`}
-      profiles={profiles}
-      selectedProfileId={selectedProfileId}
-      initialProgramId={initialProgramId}
-      canManage={canManage}
-      notify={notify}
-      onSaved={(graph) => setGraphs((current) => [graph, ...current.filter((item) => item.id !== graph.id)])}
-    />}
-
-    {automaticSource === "legacy-programs" && <section className="formation-panel automatic-graph-panel program-automatic-panel">
+    {automaticSource === "programs" && <section className="formation-panel automatic-graph-panel program-automatic-panel">
       <div className="automatic-graph-heading"><div><span className="automatic-source"><CircleDashed size={14}/> Fuente clínica automática</span><h2>Sesiones → mediciones → gráfica</h2><p>La configuración visual es independiente; los valores permanecen en sus sesiones de origen.</p></div><CheckCircle2 size={25}/></div>
       {profilesWithPrograms.length && effectiveAutomaticProgram && effectiveAutomaticTargets[0] ? <>
         <div className="automatic-metrics program-automatic-metrics">
@@ -1763,7 +1361,7 @@ export default function GraphManager({
               })}</div></fieldset>}
               <fieldset><legend><Filter size={14}/> Rango y formato</legend>
                 <div className="automatic-date-range"><label><span>Desde</span><input type="date" value={automaticDateFrom} onChange={(event) => setAutomaticDateFrom(event.target.value)}/></label><label><span>Hasta</span><input type="date" value={automaticDateTo} onChange={(event) => setAutomaticDateTo(event.target.value)}/></label></div>
-                <div className="automatic-graph-tabs compact" role="tablist">{(["line", "bar", "cumulative"] as AutomaticGraphType[]).map((type) => <button type="button" role="tab" aria-selected={automaticType === type} className={automaticType === type ? "active" : ""} onClick={() => setAutomaticType(type)} key={type}>{type === "line" ? <LineChart size={15}/> : type === "bar" ? <BarChart3 size={15}/> : <TrendingUp size={15}/>}<span>{GRAPH_TYPE_LABELS[type]}</span></button>)}</div>
+                <div className="automatic-graph-tabs compact" role="tablist">{(["line", "bar", "cumulative"] as GraphType[]).map((type) => <button type="button" role="tab" aria-selected={automaticType === type} className={automaticType === type ? "active" : ""} onClick={() => setAutomaticType(type)} key={type}>{type === "line" ? <LineChart size={15}/> : type === "bar" ? <BarChart3 size={15}/> : <TrendingUp size={15}/>}<span>{GRAPH_TYPE_LABELS[type]}</span></button>)}</div>
                 {automaticType === "line" && <label><span>Diseño experimental</span><select value={automaticDesign} onChange={(event) => { setAutomaticDesign(event.target.value as LineDesign); setAutomaticPhases(null); }}>{Object.entries(LINE_DESIGN_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>}
                 {automaticType === "cumulative" && <small className="clinical-control-note">Esta vista representa el total histórico de targets adquiridos; nunca suma respuestas ni porcentajes de sesión.</small>}
               </fieldset>

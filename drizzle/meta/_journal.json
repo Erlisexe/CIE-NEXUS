@@ -169,6 +169,13 @@
       "when": 1789054491663,
       "tag": "0023_certain_klaw",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1789428403112,
+      "tag": "0024_last_silver_samurai",
+      "breakpoints": true
     }
   ]
 }

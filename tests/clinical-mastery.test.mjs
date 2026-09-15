@@ -143,15 +143,3 @@ test("la gráfica acumulativa usa eventos únicos, inicia en cero y nunca descie
   assert.equal(values.at(-1), 2);
   assert.equal(values.every((value, index) => index === 0 || value >= values[index - 1]), true);
 });
-
-test("un criterio copiado al cerrar permanece inmutable si luego cambia la configuración", () => {
-  const current = target("T1", { threshold: 95, minTrials: 10, requiredSessions: 1, initialState: "baseline" });
-  const historical = result("T1", [1,1,1,1,1,1,1,1,0,0]);
-  historical.criterionSnapshot = {
-    state: "baseline",
-    criterion: { ...current.criteria.baseline, threshold: 80 },
-  };
-  const replay = replayClinicalProgram([current], [session("S1", "2026-08-01", [historical])]);
-  assert.equal(replay.targetStates.get("T1"), "closed");
-  assert.equal(replay.masteryEvents.length, 1);
-});

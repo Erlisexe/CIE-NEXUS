@@ -1,72 +1,134 @@
-import { normalizeCriteria, normalizeTargetState, type ClinicalSessionResult, type TargetCriteria, type TargetState } from "./clinical-mastery.ts";
-import { PROMPT_LEVELS, type PromptLevelId } from "./trial-data.ts";
+import { normalizeCriteria, normalizeTargetState, type ClinicalSessionResult, type TargetCriteria, type TargetState, type TrialResponseCode } from "./clinical-mastery.ts";
 import { missingRequiredSessionNoteFields, type SessionNoteTemplateSnapshot } from "./session-note-templates.ts";
 
-export type CollectionTarget = { id: string; code: string; name: string; measurement: string; unitLabel: string; specificObjective: string; state: TargetState; criteria: TargetCriteria };
+export type SessionTargetConfig = {
+  discriminativeStimulus: string;
+  teachingInstructions: string;
+  taskSteps: string[];
+  intervalSeconds: 10 | 30 | 60;
+  maintenanceProbeEveryDays: number;
+};
+export type CollectionTarget = {
+  id: string;
+  code: string;
+  name: string;
+  measurement: string;
+  unitLabel: string;
+  specificObjective: string;
+  state: TargetState;
+  criteria: TargetCriteria;
+  sessionConfig: SessionTargetConfig;
+  lastPromptCode?: TrialResponseCode | null;
+  lastSampledDate?: string | null;
+  maintenanceDue?: boolean;
+  maintenanceDueDate?: string | null;
+};
 export type CollectionProgram = { id: string; name: string; objective: string; instructions: string; targets: CollectionTarget[] };
 export type CollectionPreparation = {
-  profile: { id: string; fullName: string; site: string };
+  profile: { id: string; fullName: string; site: string; clinicalAlerts?: { allergies: string; medications: string; reinforcers: string } };
   appointment: { id: string; sessionDate: string; startTime: string; endTime: string; notes: string } | null;
-  professionalAccountId: string; programs: CollectionProgram[]; templates: SessionNoteTemplateSnapshot[]; canRecordAbc: boolean; preparedAt: string;
+  professionalAccountId: string; professionalName?: string; sessionDate?: string; programs: CollectionProgram[]; templates: SessionNoteTemplateSnapshot[]; canRecordAbc: boolean; preparedAt: string;
 };
-export type Observation = { id: string; at: string; value: number; promptLevel?: PromptLevelId; removedAt?: string; replaces?: string };
-export type TargetCapture = { targetId: string; definition: string; observations: Observation[]; note: string; opportunities: number; timerStartedAt: string | null };
-export type CollectionAbc = { id: string; at: string; eventDate: string; eventTime: string; programId: string | null; targetId: string | null; antecedent: string; behavior: string; consequence: string; context: string; activity: string; note: string };
+export type Observation = { id: string; at: string; value: number; responseCode?: TrialResponseCode; taskStepIndex?: number; taskStep?: string; probe?: boolean; intervalSeconds?: number; removedAt?: string; replaces?: string };
+export type TargetCapture = {
+  targetId: string;
+  definition: string;
+  observations: Observation[];
+  note: string;
+  opportunities: number;
+  timerStartedAt: string | null;
+  frequencyObservationStartedAt?: string | null;
+  frequencyObservationElapsedMs?: number;
+};
+export type CollectionAbc = { id: string; at: string; eventDate: string; eventTime: string; programId: string | null; targetId: string | null; antecedent: string; behavior: string; consequence: string; intensity?: number; context: string; activity: string; note: string };
 export const PREFLIGHT_ITEMS = [
   { id: "identity", label: "Confirmé la identidad del niño y su cita." },
   { id: "programs", label: "Revisé los programas, las instrucciones y los criterios vigentes." },
   { id: "materials", label: "Preparé los materiales y el contexto para esta sesión." },
 ] as const;
-export { PROMPT_LEVELS };
 export type SessionPreflight = { version: 1; accountId: string; profileId: string; checkedAt: string; timing: "before_start" | "recovered_draft"; checks: Record<typeof PREFLIGHT_ITEMS[number]["id"], boolean> };
 export type SignaturePoint = { x: number; y: number };
 export type SessionSignature = { version: 1; accountId: string; name: string; signedAt: string; attested: true; strokes: SignaturePoint[][] };
+export type SessionClosing = {
+  activities: string;
+  incidents: string;
+  guardianPresent: boolean;
+  guardianName: string;
+  concernPresent: boolean;
+  concernNote: string;
+  coordinatorName: string;
+  coordinatorSignature?: SessionSignature;
+};
 export type CollectionDraft = {
   id: string; preparation: CollectionPreparation; startedAt: string; endedAt: string | null;
   elapsedMs: number; runningSince: string | null; context: string; captures: Record<string, TargetCapture>; abc: CollectionAbc[];
   template: SessionNoteTemplateSnapshot; noteValues: Record<string, string>; status: "active" | "pending" | "conflict" | "synced";
   syncError: string; syncErrorCode: string; syncedAt: string | null; confirmHistoricalImpact: boolean; lastActiveAt: string;
-  preflight?: SessionPreflight; signature?: SessionSignature;
+  preflight?: SessionPreflight; signature?: SessionSignature; closing?: SessionClosing;
 };
 export type CollectionReceipt = { id: string; status: "closed"; closedAt: string; sessionIds: string[]; duplicate: boolean };
 export class CollectionError extends Error {
   code: string; status: number;
   constructor(code: string, message: string, status = 400) { super(message); this.code = code; this.status = status; }
 }
-export const isDiscrete = (measurement: string) => ["percentage", "occurrence", "discrete_trials"].includes(measurement);
+export function isDuplicateTrialTap(previous: { targetId: string; at: number } | null, targetId: string, at: number, windowMs = 420) {
+  return Boolean(previous && previous.targetId === targetId && at - previous.at >= 0 && at - previous.at < windowMs);
+}
+export const isDiscrete = (measurement: string) => ["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(measurement);
+export function normalizeSessionTargetConfig(value: unknown): SessionTargetConfig {
+  let raw: Record<string, unknown> = {};
+  if (typeof value === "string") { try { raw = JSON.parse(value) as Record<string, unknown>; } catch { raw = {}; } }
+  else if (value && typeof value === "object" && !Array.isArray(value)) raw = value as Record<string, unknown>;
+  const interval = Number(raw.intervalSeconds);
+  const taskSteps = Array.isArray(raw.taskSteps) ? raw.taskSteps.map((step) => typeof step === "string" ? step.trim() : "").filter(Boolean).slice(0, 100) : [];
+  return {
+    discriminativeStimulus: typeof raw.discriminativeStimulus === "string" ? raw.discriminativeStimulus.trim().slice(0, 2000) : "",
+    teachingInstructions: typeof raw.teachingInstructions === "string" ? raw.teachingInstructions.trim().slice(0, 12000) : "",
+    taskSteps,
+    intervalSeconds: interval === 10 || interval === 60 ? interval : 30,
+    maintenanceProbeEveryDays: Math.min(365, Math.max(1, Math.round(Number(raw.maintenanceProbeEveryDays) || 7))),
+  };
+}
 export function collectionDateTime(at: string | Date) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(at));
   const part = (type: string) => parts.find((p) => p.type === type)?.value || "";
   return { date: `${part("year")}-${part("month")}-${part("day")}`, time: `${part("hour")}:${part("minute")}` };
 }
 export const activeObservations = (capture: TargetCapture) => capture.observations.filter((item) => !item.removedAt).sort((a,b) => a.at.localeCompare(b.at));
-export function targetDefinition(t: CollectionTarget) { return JSON.stringify([t.id, t.code, t.name, t.specificObjective, t.measurement, t.unitLabel, normalizeCriteria(t.criteria, t.measurement)]); }
+export function targetDefinition(t: CollectionTarget) { return JSON.stringify([t.id, t.code, t.name, t.specificObjective, t.measurement, t.unitLabel, normalizeCriteria(t.criteria, t.measurement), normalizeSessionTargetConfig(t.sessionConfig)]); }
 export function programDefinition(p: CollectionProgram) { return JSON.stringify([p.id, p.name, p.objective, p.instructions]); }
 export function templateDefinition(t: SessionNoteTemplateSnapshot) { return JSON.stringify([t.id, t.name, t.description, t.fields.map((f) => [f.id, f.label, f.guidance, f.required])]); }
 export function createCollectionDraft(preparation: CollectionPreparation, id: string, at: string): CollectionDraft {
   if (!preparation.templates.length) throw new CollectionError("template_missing", "No hay una plantilla de nota disponible.");
   return { id, preparation, startedAt: at, endedAt: null, elapsedMs: 0, runningSince: at, context: preparation.profile.site || "", captures: {}, abc: [],
-    template: preparation.templates[0]!, noteValues: {}, status: "active", syncError: "", syncErrorCode: "", syncedAt: null, confirmHistoricalImpact: false, lastActiveAt: at };
+    template: preparation.templates[0]!, noteValues: {}, status: "active", syncError: "", syncErrorCode: "", syncedAt: null, confirmHistoricalImpact: false, lastActiveAt: at,
+    closing: { activities: "", incidents: "", guardianPresent: false, guardianName: "", concernPresent: false, concernNote: "", coordinatorName: "" } };
 }
 export function capturedResult(target: CollectionTarget, capture?: TargetCapture): ClinicalSessionResult {
   const events = capture ? activeObservations(capture) : [];
-  const sampled = events.length > 0;
+  const sampled = events.length > 0 || (target.measurement === "frequency" && (capture?.frequencyObservationElapsedMs || 0) > 0);
   const trials = isDiscrete(target.measurement) ? events.map((e) => e.value as 0 | 1) : [];
   const correct = trials.length ? trials.reduce<number>((n, v) => n + v, 0) : null;
   // Both timers retain the web collector's accumulated measurement in seconds.
   const value = !sampled ? null : trials.length ? Math.round(correct! / trials.length * 1000) / 10 : events.reduce((n, e) => n + e.value, 0);
-  const state = normalizeTargetState(target.state);
-  const criterionStage = state === "closed" ? null : state;
-  const criterion = criterionStage ? normalizeCriteria(target.criteria, target.measurement)[criterionStage] : undefined;
-  return { targetId: target.id, sampled, value, correct, opportunities: trials.length || (sampled ? capture!.opportunities : 0), trials,
-    ...(trials.length ? { trialDetails: events.map((event) => ({ value: event.value as 0 | 1, at: event.at, ...(event.promptLevel ? { promptLevel: event.promptLevel } : {}) })) } : {}),
-    note: capture?.note || "", stateAtSession: state,
-    ...(criterion && criterionStage ? { criterionSnapshot: { state: criterionStage, criterion } } : {}), criterionStatus: "not_evaluated", criterionReason: "" };
+  const frequencyObservationSeconds = target.measurement === "frequency" ? Math.max(0, Math.round((capture?.frequencyObservationElapsedMs || 0) / 1000)) : undefined;
+  return { targetId: target.id, sampled, value, correct, opportunities: trials.length || (sampled ? capture!.opportunities : 0), trials, note: capture?.note || "",
+    stateAtSession: normalizeTargetState(target.state), criterionStatus: "not_evaluated", criterionReason: "",
+    trialDetails: isDiscrete(target.measurement) ? events.map((event) => ({ id: event.id, at: event.at, responseCode: event.responseCode || (event.value === 1 ? "I" : "X"), ...(Number.isInteger(event.taskStepIndex) ? { taskStepIndex: event.taskStepIndex, taskStep: event.taskStep } : {}), ...(event.probe ? { probe: true } : {}) })) : undefined,
+    observations: events.map((event) => ({ id: event.id, at: event.at, value: event.value, ...(event.responseCode ? { responseCode: event.responseCode } : {}) })),
+    frequencyObservationSeconds,
+    ratePerMinute: target.measurement === "frequency" && frequencyObservationSeconds && value !== null ? Math.round((value / frequencyObservationSeconds) * 6000) / 100 : null };
 }
 export function stopCollectionClocks(draft: CollectionDraft, at: string, makeId: () => string): CollectionDraft {
   const end = Date.parse(at);
-  const captures = Object.fromEntries(Object.entries(draft.captures).map(([id, c]) => !c.timerStartedAt ? [id, c] : [id, { ...c, timerStartedAt: null, opportunities: Math.max(1, c.opportunities),
-    observations: [...c.observations, { id: makeId(), at, value: Math.max(0, Math.round((end - Date.parse(c.timerStartedAt)) / 1000)) }] }]));
+  const captures = Object.fromEntries(Object.entries(draft.captures).map(([id, capture]) => {
+    let c = capture;
+    if (c.timerStartedAt) c = { ...c, timerStartedAt: null, opportunities: Math.max(1, c.opportunities),
+      observations: [...c.observations, { id: makeId(), at, value: Math.max(0, Math.round((end - Date.parse(c.timerStartedAt)) / 1000)) }] };
+    if (c.frequencyObservationStartedAt) c = { ...c, frequencyObservationStartedAt: null,
+      frequencyObservationElapsedMs: Math.max(0, c.frequencyObservationElapsedMs || 0) + Math.max(0, end - Date.parse(c.frequencyObservationStartedAt)) };
+    return [id, c];
+  }));
   return { ...draft, captures, runningSince: null, elapsedMs: draft.elapsedMs + (draft.runningSince ? Math.max(0, end - Date.parse(draft.runningSince)) : 0) };
 }
 export function closeCollectionDraft(draft: CollectionDraft, at: string, makeId: () => string): CollectionDraft {
@@ -76,6 +138,8 @@ export function closeCollectionDraft(draft: CollectionDraft, at: string, makeId:
   const missing = missingRequiredSessionNoteFields(stopped.template.fields, stopped.noteValues);
   if (missing.length) throw new CollectionError("note_required", `Completa la nota: ${missing.map((f) => f.label).join(", ")}.`);
   if (stopped.abc.some((a) => !a.antecedent.trim() || !a.behavior.trim() || !a.consequence.trim())) throw new CollectionError("abc_required", "Completa antecedente, conducta y consecuencia de cada Registro ABC iniciado.");
+  if (stopped.closing?.guardianPresent && !stopped.closing.guardianName.trim()) throw new CollectionError("guardian_name_required", "Escribe el nombre del tutor presente.");
+  if (stopped.closing?.concernPresent && !stopped.closing.concernNote.trim()) throw new CollectionError("concern_note_required", "Describe la preocupación médica o ambiental.");
   if (!stopped.preparation.programs.some((p) => p.targets.some((t) => capturedResult(t, stopped.captures[t.id]).sampled))) throw new CollectionError("data_required", "Registra al menos un resultado. Un cero observado también es un resultado.");
   const closed: CollectionDraft = { ...stopped, endedAt: draft.endedAt || at, status: "pending", syncError: "", syncErrorCode: "" };
   validateCollectionReview(collectionPayload(closed), draft.preparation.professionalAccountId);
@@ -100,19 +164,16 @@ export function reviewCollectionConfiguration(draft: CollectionDraft, fresh: Col
 export function collectionPayload(draft: CollectionDraft) {
   return { id: draft.id, preparation: draft.preparation, startedAt: draft.startedAt, endedAt: draft.endedAt, durationSeconds: Math.round(draft.elapsedMs / 1000), context: draft.context,
     captures: draft.captures, abc: draft.abc, template: draft.template, noteValues: draft.noteValues, confirmHistoricalImpact: draft.confirmHistoricalImpact,
-    ...(draft.preflight ? { preflight: draft.preflight } : {}), ...(draft.signature ? { signature: draft.signature } : {}) };
+    ...(draft.preflight ? { preflight: draft.preflight } : {}), ...(draft.signature ? { signature: draft.signature } : {}), ...(draft.closing ? { closing: draft.closing } : {}) };
 }
 export type CollectionPayload = ReturnType<typeof collectionPayload>;
-export function validateCollectionReview(body: CollectionPayload, actorId: string) {
-  const fail = (message: string): never => { throw new CollectionError("session_review_required", message, 409); };
-  const pre = body.preflight, signature = body.signature;
-  if (!pre || pre.version !== 1 || pre.accountId !== actorId || pre.profileId !== body.preparation.profile.id || !pre.checks || PREFLIGHT_ITEMS.some((item) => pre.checks[item.id] !== true)) fail("Completa el checklist de la sesión. Los registros anteriores se conservan para revisión.");
-  const checked = Date.parse(pre!.checkedAt), signed = Date.parse(signature?.signedAt || "");
-  if (!Number.isFinite(checked) || !["before_start", "recovered_draft"].includes(pre!.timing) || (pre!.timing === "before_start" && checked > Date.parse(body.startedAt) + 1000)) fail("La revisión previa no corresponde al inicio de esta sesión.");
-  if (!signature || signature.version !== 1 || signature.accountId !== actorId || typeof signature.name !== "string" || !signature.name.trim() || signature.name.length > 200 || signature.attested !== true || !Number.isFinite(signed) || signed < checked || signed < Date.parse(body.endedAt!) - 2000 || signed > Date.now() + 300000) fail("Firma el cierre con la cuenta del profesional que registró la sesión.");
-  if (!Array.isArray(signature!.strokes) || signature!.strokes.length > 80) fail("Vuelve a trazar la firma del profesional.");
+function validateSignatureShape(signature: SessionSignature | undefined, fail: (message: string) => never, options: { actorId?: string; notBefore: number; required: boolean }) {
+  if (!signature) { if (options.required) fail("Traza la firma del profesional antes de cerrar la sesión."); return; }
+  const signed = Date.parse(signature.signedAt || "");
+  if (signature.version !== 1 || (options.actorId && signature.accountId !== options.actorId) || typeof signature.name !== "string" || !signature.name.trim() || signature.name.length > 200 || signature.attested !== true || !Number.isFinite(signed) || signed < options.notBefore || signed > Date.now() + 300000) fail("La firma no corresponde al cierre de esta sesión.");
+  if (!Array.isArray(signature.strokes) || signature.strokes.length > 80) fail("Vuelve a trazar la firma.");
   let points = 0, distance = 0;
-  for (const stroke of signature!.strokes) {
+  for (const stroke of signature.strokes) {
     if (!Array.isArray(stroke)) fail("La firma no tiene un formato válido.");
     for (let i = 0; i < stroke.length; i++) {
       const p = stroke[i]!; points++;
@@ -120,7 +181,16 @@ export function validateCollectionReview(body: CollectionPayload, actorId: strin
       if (i) distance += Math.hypot(p.x - stroke[i - 1]!.x, p.y - stroke[i - 1]!.y);
     }
   }
-  if (points < 3 || distance < 0.08) fail("Traza tu firma antes de cerrar la sesión.");
+  if (points < 3 || distance < 0.08) fail("Traza una firma completa antes de cerrar la sesión.");
+}
+export function validateCollectionReview(body: CollectionPayload, actorId: string) {
+  const fail = (message: string): never => { throw new CollectionError("session_review_required", message, 409); };
+  const pre = body.preflight, signature = body.signature;
+  if (!pre || pre.version !== 1 || pre.accountId !== actorId || pre.profileId !== body.preparation.profile.id || !pre.checks || PREFLIGHT_ITEMS.some((item) => pre.checks[item.id] !== true)) fail("Completa el checklist de la sesión. Los registros anteriores se conservan para revisión.");
+  const checked = Date.parse(pre!.checkedAt);
+  if (!Number.isFinite(checked) || !["before_start", "recovered_draft"].includes(pre!.timing) || (pre!.timing === "before_start" && checked > Date.parse(body.startedAt) + 1000)) fail("La revisión previa no corresponde al inicio de esta sesión.");
+  validateSignatureShape(signature, fail, { actorId, notBefore: Math.max(checked, Date.parse(body.endedAt!) - 2000), required: true });
+  validateSignatureShape(body.closing?.coordinatorSignature, fail, { notBefore: Date.parse(body.endedAt!) - 2000, required: false });
 }
 export function validateCollectionPayload(raw: unknown): CollectionPayload {
   const fail = (message: string): never => { throw new CollectionError("invalid_collection", message); };
@@ -145,16 +215,17 @@ export function validateCollectionPayload(raw: unknown): CollectionPayload {
     if (!p || !str(p.id, 100, true) || programIds.has(p.id) || !Array.isArray(p.targets)) fail("Hay programas duplicados o inválidos.");
     programIds.add(p.id);
     for (const t of p.targets) {
-      if (!t || !str(t.id, 100, true) || targetIds.has(t.id) || !["percentage", "occurrence", "discrete_trials", "frequency", "duration", "latency"].includes(t.measurement)) fail("Hay targets duplicados o inválidos.");
+      if (!t || !str(t.id, 100, true) || targetIds.has(t.id) || !["percentage", "occurrence", "discrete_trials", "frequency", "duration", "latency", "partial_interval", "task_analysis"].includes(t.measurement)) fail("Hay targets duplicados o inválidos.");
       targetIds.add(t.id);
       const c = body.captures[t.id]; if (!c) continue;
-      if (c.targetId !== t.id || !str(c.definition, 20000, true) || !Array.isArray(c.observations) || !str(c.note, 12000) || c.timerStartedAt !== null || !Number.isInteger(c.opportunities) || c.opportunities < 0) fail("Detén los cronómetros y revisa los registros del target.");
+      if (c.targetId !== t.id || !str(c.definition, 20000, true) || !Array.isArray(c.observations) || c.observations.length > 10000 || !str(c.note, 12000) || c.timerStartedAt !== null || c.frequencyObservationStartedAt || !Number.isInteger(c.opportunities) || c.opportunities < 0) fail("Detén los cronómetros y revisa los registros del target.");
       if (c.definition !== targetDefinition(t)) fail("La definición de la medición no coincide con la preparación.");
       for (const e of c.observations) {
         if (!e || !uuid.test(e.id) || eventIds.has(e.id) || !at(e.at) || !Number.isFinite(e.value) || e.value < 0 || (e.removedAt && !at(e.removedAt))) fail("Un registro es inválido o está duplicado.");
-        if (e.promptLevel !== undefined && !PROMPT_LEVELS.some((item) => item.id === e.promptLevel)) fail("El nivel de ayuda del ensayo no es válido.");
         if (Date.parse(e.at) < Date.parse(body.startedAt) || Date.parse(e.at) > Date.parse(body.endedAt!) + 1000) fail("Un registro está fuera del horario de la sesión.");
         if (isDiscrete(t.measurement) && e.value !== 0 && e.value !== 1) fail("Los ensayos discretos sólo admiten 1 o 0.");
+        if (e.responseCode && !["I", "G", "V", "M", "FP", "FT", "X"].includes(e.responseCode)) fail("Un nivel de ayuda no es válido.");
+        if (e.taskStepIndex !== undefined && (!Number.isInteger(e.taskStepIndex) || e.taskStepIndex < 0 || e.taskStepIndex > 99 || !str(e.taskStep || "", 500))) fail("Un paso del análisis de tarea no es válido.");
         if (t.measurement === "frequency" && !Number.isInteger(e.value)) fail("La frecuencia debe ser un número entero.");
         eventIds.add(e.id);
       }
@@ -168,10 +239,17 @@ export function validateCollectionPayload(raw: unknown): CollectionPayload {
     if (!Number.isFinite(abcDate.getTime()) || abcDate.toISOString().slice(0,10) !== a.eventDate || Date.parse(a.at) < Date.parse(body.startedAt) || Date.parse(a.at) > Date.parse(body.endedAt!)) fail("El ABC está fuera del horario registrado.");
     const recorded = collectionDateTime(a.at);
     if (a.eventDate !== recorded.date || a.eventTime !== recorded.time) fail("La fecha y hora del ABC no corresponden al evento registrado en Nicaragua.");
-    if (![a.antecedent, a.behavior, a.consequence].every((s) => str(s, 2000, true)) || !str(a.context, 300) || !str(a.activity, 300) || !str(a.note, 3000)) fail("Completa antecedente, conducta y consecuencia con hechos observables.");
+    if (![a.antecedent, a.behavior, a.consequence].every((s) => str(s, 2000, true)) || !str(a.context, 300) || !str(a.activity, 300) || !str(a.note, 3000) || (a.intensity !== undefined && (!Number.isInteger(a.intensity) || a.intensity < 1 || a.intensity > 5))) fail("Completa antecedente, conducta, consecuencia e intensidad con hechos observables.");
     if (a.programId && !programIds.has(a.programId)) fail("El programa del ABC no corresponde al niño.");
     if (a.targetId && !body.preparation.programs.find((p) => p.id === a.programId)?.targets.some((t) => t.id === a.targetId)) fail("El target del ABC no corresponde al programa.");
     eventIds.add(a.id);
+  }
+  if (body.closing) {
+    const closing = body.closing;
+    if (!str(closing.activities, 12000) || !str(closing.incidents, 12000) || typeof closing.guardianPresent !== "boolean" || !str(closing.guardianName, 300) || typeof closing.concernPresent !== "boolean" || !str(closing.concernNote, 12000) || !str(closing.coordinatorName, 300)) fail("Revisa los datos de cierre de la sesión.");
+    if (closing.guardianPresent && !closing.guardianName.trim()) fail("Escribe el nombre del tutor presente.");
+    if (closing.concernPresent && !closing.concernNote.trim()) fail("Describe la preocupación médica o ambiental.");
+    if (closing.coordinatorSignature && !closing.coordinatorName.trim()) fail("Escribe el nombre del coordinador que firmó la sesión.");
   }
   if (!body.preparation.programs.some((p) => p.targets.some((t) => capturedResult(t, body.captures[t.id]).sampled))) fail("La sesión no contiene resultados observados.");
   return body;

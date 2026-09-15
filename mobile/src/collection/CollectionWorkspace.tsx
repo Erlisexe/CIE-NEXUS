@@ -2,9 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, AppState, BackHandler, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { evaluateResult, targetStateLabel, type CriterionStage, type TargetState } from "../../../lib/clinical-mastery.ts";
-import { activeObservations, capturedResult, closeCollectionDraft, collectionDateTime, createCollectionDraft, isDiscrete, reviewCollectionConfiguration, stopCollectionClocks, targetDefinition, PREFLIGHT_ITEMS, PROMPT_LEVELS,
+import { activeObservations, capturedResult, closeCollectionDraft, collectionDateTime, createCollectionDraft, isDiscrete, reviewCollectionConfiguration, stopCollectionClocks, targetDefinition, PREFLIGHT_ITEMS,
   type CollectionDraft, type CollectionPreparation, type Observation, type TargetCapture, type SessionPreflight, type SignaturePoint } from "../../../lib/mobile-collection.ts";
-import { promptLevelLabel, type PromptLevelId } from "../../../lib/trial-data.ts";
 import type { Appointment, Bootstrap } from "../types";
 import { mobileGet, MobileApiError } from "../lib/api";
 import { colors } from "../theme";
@@ -35,7 +34,6 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
   const [panel, setPanel] = useState<Panel>(null);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [manualValue, setManualValue] = useState("");
-  const [promptByTarget, setPromptByTarget] = useState<Record<string, PromptLevelId>>({});
   const [checks, setChecks] = useState({ identity: false, programs: false, materials: false });
   const [signatureStrokes, setSignatureStrokes] = useState<SignaturePoint[][]>([]);
   const [attested, setAttested] = useState(false);
@@ -48,7 +46,7 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
   useEffect(() => { currentRef.current = draft; saveRef.current = save; backRef.current = onBack; }, [draft, onBack, save]);
 
   function selectDraft(id: string | null) {
-    setSelectedId(id); setPromptByTarget({}); setSignatureStrokes([]); setAttested(false); setChecks({identity:false,programs:false,materials:false});
+    setSelectedId(id); setSignatureStrokes([]); setAttested(false); setChecks({identity:false,programs:false,materials:false});
   }
 
   function commit(change: (d: CollectionDraft) => CollectionDraft) {
@@ -163,7 +161,6 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
 
   const program = draft.preparation.programs.find((p) => p.id === programId) || draft.preparation.programs[0]!;
   const target = program.targets.find((t) => t.id === targetId) || program.targets[0]!;
-  const promptLevel = promptByTarget[target.id] || "independent";
   const capture = draft.captures[target.id];
   const result = capturedResult(target, capture);
   const criterion = target.criteria[(target.state === "closed" ? "maintenance" : target.state) as CriterionStage];
@@ -181,7 +178,7 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
       return { ...d, captures: { ...d.captures, [target.id]: change(initial) } };
     });
   }
-  function add(value: number) { changeCapture((c) => ({ ...c, observations: [...c.observations, { id: randomUUID(), at: new Date().toISOString(), value, ...(isDiscrete(target.measurement) ? { promptLevel } : {}) }] })); }
+  function add(value: number) { changeCapture((c) => ({ ...c, observations: [...c.observations, { id: randomUUID(), at: new Date().toISOString(), value }] })); }
   function undo(id?: string) {
     changeCapture((c) => { const last = id || activeObservations(c).at(-1)?.id; return { ...c, observations: c.observations.map((o) => o.id === last ? { ...o, removedAt: new Date().toISOString() } : o) }; });
   }
@@ -189,7 +186,7 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
     if (!enabled) return;
     Alert.alert("Corregir ensayo", `Ensayo registrado: ${observation.value === 1 ? "Correcto" : "Incorrecto"}.`, [
       { text: "Volver", style: "cancel" }, { text: "Eliminar", onPress: () => undo(observation.id) },
-      { text: "Cambiar respuesta", onPress: () => changeCapture((c) => ({ ...c, observations: [...c.observations.map((o) => o.id === observation.id ? { ...o, removedAt: new Date().toISOString() } : o), { id: randomUUID(), at: observation.at, value: observation.value === 1 ? 0 : 1, ...(observation.promptLevel ? { promptLevel: observation.promptLevel } : {}), replaces: observation.id }] })) },
+      { text: "Cambiar respuesta", onPress: () => changeCapture((c) => ({ ...c, observations: [...c.observations.map((o) => o.id === observation.id ? { ...o, removedAt: new Date().toISOString() } : o), { id: randomUUID(), at: observation.at, value: observation.value === 1 ? 0 : 1, replaces: observation.id }] })) },
     ]);
   }
   function togglePause() {
@@ -232,14 +229,14 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
         <View style={s.card}><View style={s.row}><Text style={s.phase}>{phase(target.state)}</Text><Text style={s.meta}>{measurement(target.measurement)}</Text></View><Text style={s.title}>{target.name}</Text>{target.specificObjective ? <Text style={s.body}>{target.specificObjective}</Text> : null}
           <Text style={s.score}>{isDiscrete(target.measurement) ? result.value === null ? "—" : `${result.value}%` : ["duration","latency"].includes(target.measurement) ? clock(targetSeconds) : result.value === null ? "—" : String(result.value)}</Text>
           <Text style={s.scoreCaption}>{isDiscrete(target.measurement) ? `${result.correct || 0} correctos · ${result.opportunities} ensayos` : target.unitLabel || (target.measurement === "frequency" ? "ocurrencias" : "segundos")}</Text>
-          {isDiscrete(target.measurement) ? <><Text style={s.label}>Nivel de ayuda del próximo ensayo</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.promptRail}>{PROMPT_LEVELS.map((level) => <Pressable accessibilityRole="button" accessibilityState={{ selected: promptLevel === level.id }} key={level.id} onPress={() => setPromptByTarget((current) => ({ ...current, [target.id]: level.id }))} style={[s.promptChip, promptLevel === level.id && s.promptChipActive]}><Text style={[s.meta, promptLevel === level.id && s.promptChipTextActive]}>{level.label}</Text></Pressable>)}</ScrollView><View style={s.row}><Pressable accessibilityRole="button" disabled={!enabled} onPress={() => add(1)} style={[s.capture,s.correct,!enabled && s.disabled]}><Text style={s.captureSymbol}>✓</Text><Text style={s.captureLabel}>Correcto</Text></Pressable><Pressable accessibilityRole="button" disabled={!enabled} onPress={() => add(0)} style={[s.capture,s.incorrect,!enabled && s.disabled]}><Text style={s.captureSymbol}>×</Text><Text style={s.captureLabel}>Incorrecto</Text></Pressable></View></>
+          {isDiscrete(target.measurement) ? <View style={s.row}><Pressable accessibilityRole="button" disabled={!enabled} onPress={() => add(1)} style={[s.capture,s.correct,!enabled && s.disabled]}><Text style={s.captureSymbol}>✓</Text><Text style={s.captureLabel}>Correcto</Text></Pressable><Pressable accessibilityRole="button" disabled={!enabled} onPress={() => add(0)} style={[s.capture,s.incorrect,!enabled && s.disabled]}><Text style={s.captureSymbol}>×</Text><Text style={s.captureLabel}>Incorrecto</Text></Pressable></View>
           : target.measurement === "frequency" ? <><Button disabled={!enabled} onPress={() => add(1)}>+ Registrar ocurrencia</Button>{!result.sampled ? <Button quiet disabled={!enabled} onPress={() => add(0)}>Registrar 0 observado</Button> : null}</>
           : <Button disabled={!enabled} onPress={() => changeCapture((c) => {
             const at = new Date().toISOString(); return c.timerStartedAt ? { ...c, timerStartedAt: null, observations: [...c.observations, { id: randomUUID(), at, value: Math.max(0, Math.round((Date.parse(at)-Date.parse(c.timerStartedAt))/1000)) }] } : { ...c,timerStartedAt: at };
           })}>{capture?.timerStartedAt ? "Detener cronómetro del target" : "Iniciar cronómetro del target"}</Button>}
           <Button quiet disabled={!enabled || !observations.length} onPress={() => undo()}>Deshacer último registro</Button>
           <View style={s.sample}><Text style={s.label}>{result.opportunities >= criterion.minTrials && result.sampled ? "Mínimo de oportunidades alcanzado" : `${result.opportunities}/${criterion.minTrials} oportunidades mínimas`}</Text><Text style={s.meta}>Criterio: {criterion.operator === "gte" ? "≥" : "≤"}{criterion.threshold}{criterion.metric === "percentage_correct" ? "%" : ""} · {criterion.requiredSessions} sesiones{criterion.consecutive ? " consecutivas" : ""}</Text>{evaluation.status === "insufficient_sample" ? <Text style={s.warning}>Muestra insuficiente para criterio. El resultado se conserva.</Text> : null}<Text style={s.meta}>Puedes seguir registrando después del mínimo.</Text></View>
-          {isDiscrete(target.measurement) ? <><View style={s.trialGrid}>{observations.slice(-20).map((o,i) => <Pressable key={o.id} onPress={() => correct(o)} accessibilityLabel={`Ensayo ${Math.max(0,observations.length-20)+i+1}: ${o.value === 1 ? "correcto" : "incorrecto"}, ${promptLevelLabel(o.promptLevel)}`} style={[s.trial,o.value === 1 ? s.trialCorrect : s.trialIncorrect]}><Text style={s.label}>{o.value}</Text></Pressable>)}</View><Button quiet onPress={() => setPanel("trials")}>Ver y corregir todos los ensayos</Button></>
+          {isDiscrete(target.measurement) ? <><View style={s.trialGrid}>{observations.slice(-20).map((o,i) => <Pressable key={o.id} onPress={() => correct(o)} accessibilityLabel={`Ensayo ${Math.max(0,observations.length-20)+i+1}: ${o.value === 1 ? "correcto" : "incorrecto"}`} style={[s.trial,o.value === 1 ? s.trialCorrect : s.trialIncorrect]}><Text style={s.label}>{o.value}</Text></Pressable>)}</View><Button quiet onPress={() => setPanel("trials")}>Ver y corregir todos los ensayos</Button></>
           : <><View style={s.row}><TextInput accessibilityLabel="Valor manual" value={manualValue} onChangeText={setManualValue} keyboardType="decimal-pad" placeholder={target.measurement === "frequency" ? "Conteo total" : "Segundos totales"} style={[s.input,s.flex]} /><Button disabled={!enabled || manualValue.trim() === ""} quiet onPress={() => {
             const value = Number(manualValue.replace(",","."));
             if (!Number.isFinite(value) || value < 0 || (target.measurement === "frequency" && !Number.isInteger(value))) { Alert.alert("Valor inválido", "Registra un número no negativo; la frecuencia requiere enteros."); return; }
@@ -254,7 +251,7 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
     <Modal visible={Boolean(panel)} animationType="slide" onRequestClose={() => setPanel(null)}>
       <SafeAreaView style={s.safe}><KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={[s.sessionHeader,s.row]}><Text style={[s.heading,s.flex]}>{panel === "note" ? "Nota de sesión" : panel === "abc" ? "Registro ABC" : panel === "trials" ? "Ensayos del target" : "Revisión antes del cierre"}</Text><Button quiet onPress={() => setPanel(null)}>Volver</Button></View>
-        {panel === "trials" ? <FlatList data={observations} keyExtractor={(o) => o.id} contentContainerStyle={s.page} renderItem={({item,index}) => <Pressable onPress={() => correct(item)} style={[s.card,s.row]}><Text style={[s.body,s.flex]}>Ensayo {index+1}</Text><View><Text style={s.label}>{item.value === 1 ? "Correcto" : "Incorrecto"}</Text><Text style={s.meta}>{promptLevelLabel(item.promptLevel)}</Text></View><Text style={s.meta}>{dateParts(new Date(item.at)).time}</Text></Pressable>}/>
+        {panel === "trials" ? <FlatList data={observations} keyExtractor={(o) => o.id} contentContainerStyle={s.page} renderItem={({item,index}) => <Pressable onPress={() => correct(item)} style={[s.card,s.row]}><Text style={[s.body,s.flex]}>Ensayo {index+1}</Text><Text style={s.label}>{item.value === 1 ? "Correcto" : "Incorrecto"}</Text><Text style={s.meta}>{dateParts(new Date(item.at)).time}</Text></Pressable>}/>
         : <ScrollView scrollEnabled={!drawing} contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
           {panel === "note" ? <>
             <Text style={s.meta}>La nota se guarda mientras escribes. Puedes volver a recolectar datos sin perderla.</Text>
@@ -297,5 +294,5 @@ const s=StyleSheet.create({
   programRail:{padding:12,gap:9},programTab:{minWidth:150,maxWidth:250,borderRadius:14,padding:13,gap:5,backgroundColor:colors.surface,borderWidth:1,borderColor:colors.border},programActive:{backgroundColor:colors.primary,borderColor:colors.primary},programText:{fontSize:16,fontWeight:"800",color:colors.text},programActiveText:{color:"#fff"},
   targetRail:{gap:9,paddingVertical:3},targetTab:{padding:12,borderRadius:12,borderWidth:1,borderColor:colors.border,backgroundColor:colors.surface,minWidth:95,gap:5},targetActive:{borderWidth:2,borderColor:colors.primary,backgroundColor:colors.surfaceMuted},phase:{backgroundColor:colors.accentSoft,color:colors.warning,fontSize:14,fontWeight:"800",padding:8,borderRadius:9},
   score:{fontSize:48,fontWeight:"900",color:colors.textStrong,textAlign:"center",fontVariant:["tabular-nums"]},scoreCaption:{fontSize:16,color:colors.textMuted,textAlign:"center"},capture:{flex:1,minHeight:94,borderRadius:16,alignItems:"center",justifyContent:"center",gap:3},correct:{backgroundColor:colors.success},incorrect:{backgroundColor:colors.coral},captureSymbol:{fontSize:32,fontWeight:"800",color:"#fff"},captureLabel:{fontSize:17,fontWeight:"800",color:"#fff"},
-  sample:{backgroundColor:colors.surfaceMuted,borderRadius:13,padding:13,gap:5},promptRail:{gap:7,paddingBottom:2},promptChip:{borderWidth:1,borderColor:colors.borderStrong,borderRadius:999,paddingHorizontal:13,paddingVertical:9,backgroundColor:colors.surface},promptChipActive:{backgroundColor:colors.primary,borderColor:colors.primary},promptChipTextActive:{color:"#fff",fontWeight:"800"},trialGrid:{flexDirection:"row",gap:7,flexWrap:"wrap"},trial:{height:44,minWidth:44,borderRadius:10,alignItems:"center",justifyContent:"center"},trialCorrect:{backgroundColor:colors.successSoft},trialIncorrect:{backgroundColor:colors.coralSoft},footer:{padding:10,backgroundColor:colors.surface,borderTopWidth:1,borderTopColor:colors.border,flexDirection:"row",gap:6,justifyContent:"space-around",flexWrap:"wrap"},
+  sample:{backgroundColor:colors.surfaceMuted,borderRadius:13,padding:13,gap:5},trialGrid:{flexDirection:"row",gap:7,flexWrap:"wrap"},trial:{height:44,minWidth:44,borderRadius:10,alignItems:"center",justifyContent:"center"},trialCorrect:{backgroundColor:colors.successSoft},trialIncorrect:{backgroundColor:colors.coralSoft},footer:{padding:10,backgroundColor:colors.surface,borderTopWidth:1,borderTopColor:colors.border,flexDirection:"row",gap:6,justifyContent:"space-around",flexWrap:"wrap"},
 });

@@ -13,7 +13,7 @@ import { buildCumulativeMasteryTimeline, normalizeCriteria, normalizeTargetState
 import { mobileApiGuard, mobileData, mobileError } from "../../../../../../lib/mobile-api";
 import { mobileProfileScope } from "../../../../../../lib/mobile-data";
 import { DEFAULT_SESSION_NOTE_TEMPLATE, sanitizeSessionNoteFields } from "../../../../../../lib/session-note-templates";
-import { aggregateOnlySessionResult, canViewRawClinicalDetail } from "../../../../../../lib/clinical-data-privacy";
+import { normalizeSessionTargetConfig } from "../../../../../../lib/mobile-collection";
 
 function parsed<T>(value: unknown, fallback: T): T {
   if (typeof value !== "string") return (value as T) ?? fallback;
@@ -84,21 +84,16 @@ export async function GET(request: Request) {
         : Promise.resolve([]),
     ]);
 
-    const parsedSessions = sessions.map((session) => {
-      const rawDetailAvailable = canViewRawClinicalDetail(account, session.professionalAccountId);
-      const results = parsed<Array<Record<string, unknown>>>(session.results, []);
-      return {
-        id: session.id,
-        clinicalSessionRunId: rawDetailAvailable ? session.clinicalSessionRunId : null,
-        programId: session.programId,
-        sessionDate: session.sessionDate,
-        context: rawDetailAvailable ? session.context : "",
-        status: session.status,
-        createdAt: session.createdAt,
-        rawDetailAvailable,
-        results: rawDetailAvailable ? results : results.map(aggregateOnlySessionResult),
-      };
-    });
+    const parsedSessions = sessions.map((session) => ({
+      id: session.id,
+      clinicalSessionRunId: session.clinicalSessionRunId,
+      programId: session.programId,
+      sessionDate: session.sessionDate,
+      context: session.context,
+      status: session.status,
+      createdAt: session.createdAt,
+      results: parsed<Array<Record<string, unknown>>>(session.results, []),
+    }));
     const templates = storedTemplates.map(serializeTemplate);
     if (canRecordSessions && !templates.some((template) => template.id === DEFAULT_SESSION_NOTE_TEMPLATE.id)) {
       templates.unshift({
@@ -146,6 +141,7 @@ export async function GET(request: Request) {
             unitLabel: target.unitLabel,
             state: normalizeTargetState(target.state),
             criteria: normalizeCriteria(target.criteria, target.measurement),
+            sessionConfig: normalizeSessionTargetConfig(target.sessionConfig),
             masteryAchieved: target.masteryAchieved,
             masteredAt: target.masteredAt,
             masteryMethod: target.masteryMethod,

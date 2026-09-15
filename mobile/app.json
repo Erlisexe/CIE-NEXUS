@@ -2,7 +2,7 @@
   "expo": {
     "name": "CIE Nexus",
     "slug": "cie-nexus-mobile",
-    "version": "0.3.2",
+    "version": "0.3.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "org.cie.nexus.mobile",
-      "versionCode": 5,
+      "versionCode": 4,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

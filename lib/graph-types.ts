@@ -1,18 +1,4 @@
-export type GraphType = "line" | "bar" | "stacked-bar" | "scatter" | "cumulative";
-
-export type GraphDataSource = "manual" | "sessions" | "trials" | "abc";
-export type GraphPeriod = "today" | "7d" | "30d" | "3m" | "6m" | "all" | "custom";
-export type GraphXAxis = "date" | "session" | "target" | "prompt" | "therapist";
-export type GraphYAxis = "percentage_correct" | "count" | "rate" | "duration";
-export type GraphGrouping = "none" | "program" | "target" | "prompt" | "therapist";
-export type GraphRateUnit = "minute" | "hour" | "day";
-
-export type GraphFilters = {
-  programIds: string[];
-  targetIds: string[];
-  targetStates: string[];
-  therapistIds: string[];
-};
+export type GraphType = "line" | "bar" | "cumulative";
 
 export type LineDesign =
   | "simple"
@@ -30,18 +16,9 @@ export type GraphStatus = "active" | "archived";
 export type GraphPoint = {
   id: string;
   label: string;
-  /** Stable categorical position. It may differ from the shortened display label. */
-  xKey?: string;
   value: number | null;
   series: string;
   criterion: number | null;
-  criterionProgress?: {
-    met: number;
-    required: number;
-    label: string;
-  } | null;
-  targetId?: string;
-  stateAtPoint?: string;
   note: string;
   source?: {
     sessionId: string;
@@ -52,10 +29,6 @@ export type GraphPoint = {
     opportunities: number;
     context: string;
     sessionNotes: string;
-    professionalAccountId?: string;
-    professionalName?: string;
-    promptLevel?: string;
-    rawDetailAvailable?: boolean;
   };
 };
 
@@ -65,10 +38,6 @@ export type PhaseBoundary = {
   beforeLabel: string;
   afterLabel: string;
   boundaryDate?: string;
-  boundaryKey?: string;
-  targetId?: string;
-  targetLabel?: string;
-  origin?: "automatic" | "manual";
 };
 
 export type VisualAnalysis = {
@@ -83,7 +52,6 @@ export type VisualAnalysis = {
 };
 
 export type GraphConfig = {
-  version: 1 | 2;
   yMin: number;
   yMax: number | null;
   showGrid: boolean;
@@ -93,19 +61,10 @@ export type GraphConfig = {
   showPoints: boolean;
   showLegend: boolean;
   showValues: boolean;
-  dataSource: GraphDataSource;
+  dataSource: "manual" | "sessions";
   sourceTargetIds: string[];
   dateFrom: string;
   dateTo: string;
-  period: GraphPeriod;
-  xAxis: GraphXAxis;
-  yAxis: GraphYAxis;
-  grouping: GraphGrouping;
-  rateUnit: GraphRateUnit;
-  filters: GraphFilters;
-  showCriterion: boolean;
-  exportMetadata: string[];
-  warnings: string[];
   visualAnalysis: VisualAnalysis;
 };
 
@@ -132,9 +91,7 @@ export type AnalyticGraph = {
 
 export const GRAPH_TYPE_LABELS: Record<GraphType, string> = {
   line: "Líneas",
-  bar: "Columnas",
-  "stacked-bar": "Columnas apiladas",
-  scatter: "Dispersión",
+  bar: "Barras",
   cumulative: "Acumulativa",
 };
 
@@ -173,7 +130,6 @@ export const EMPTY_ANALYSIS: VisualAnalysis = {
 };
 
 export const DEFAULT_GRAPH_CONFIG: GraphConfig = {
-  version: 1,
   yMin: 0,
   yMax: 100,
   showGrid: true,
@@ -187,20 +143,6 @@ export const DEFAULT_GRAPH_CONFIG: GraphConfig = {
   sourceTargetIds: [],
   dateFrom: "",
   dateTo: "",
-  period: "30d",
-  xAxis: "date",
-  yAxis: "percentage_correct",
-  grouping: "target",
-  rateUnit: "hour",
-  filters: {
-    programIds: [],
-    targetIds: [],
-    targetStates: [],
-    therapistIds: [],
-  },
-  showCriterion: true,
-  exportMetadata: [],
-  warnings: [],
   visualAnalysis: EMPTY_ANALYSIS,
 };
 
@@ -215,7 +157,7 @@ function parseJson<T>(value: unknown, fallback: T): T {
 }
 
 export function normalizeGraph(raw: Record<string, unknown>): AnalyticGraph {
-  const graphType = (["line", "bar", "stacked-bar", "scatter", "cumulative"] as const).includes(raw.graphType as GraphType)
+  const graphType = (["line", "bar", "cumulative"] as const).includes(raw.graphType as GraphType)
     ? raw.graphType as GraphType
     : "line";
   const designType = Object.hasOwn(LINE_DESIGN_LABELS, String(raw.designType))
@@ -240,25 +182,10 @@ export function normalizeGraph(raw: Record<string, unknown>): AnalyticGraph {
     config: {
       ...DEFAULT_GRAPH_CONFIG,
       ...config,
-      version: config.version === 2 ? 2 : 1,
-      dataSource: (["sessions", "trials", "abc"] as const).includes(config.dataSource as "sessions" | "trials" | "abc") ? config.dataSource as GraphDataSource : "manual",
+      dataSource: config.dataSource === "sessions" ? "sessions" : "manual",
       sourceTargetIds: Array.isArray(config.sourceTargetIds) ? config.sourceTargetIds.filter((id): id is string => typeof id === "string") : [],
       dateFrom: typeof config.dateFrom === "string" ? config.dateFrom : "",
       dateTo: typeof config.dateTo === "string" ? config.dateTo : "",
-      period: (["today", "7d", "30d", "3m", "6m", "all", "custom"] as const).includes(config.period as GraphPeriod) ? config.period as GraphPeriod : "30d",
-      xAxis: (["date", "session", "target", "prompt", "therapist"] as const).includes(config.xAxis as GraphXAxis) ? config.xAxis as GraphXAxis : "date",
-      yAxis: (["percentage_correct", "count", "rate", "duration"] as const).includes(config.yAxis as GraphYAxis) ? config.yAxis as GraphYAxis : "percentage_correct",
-      grouping: (["none", "program", "target", "prompt", "therapist"] as const).includes(config.grouping as GraphGrouping) ? config.grouping as GraphGrouping : "target",
-      rateUnit: (["minute", "hour", "day"] as const).includes(config.rateUnit as GraphRateUnit) ? config.rateUnit as GraphRateUnit : "hour",
-      filters: {
-        programIds: Array.isArray(config.filters?.programIds) ? config.filters.programIds.filter((id): id is string => typeof id === "string") : [],
-        targetIds: Array.isArray(config.filters?.targetIds) ? config.filters.targetIds.filter((id): id is string => typeof id === "string") : [],
-        targetStates: Array.isArray(config.filters?.targetStates) ? config.filters.targetStates.filter((id): id is string => typeof id === "string") : [],
-        therapistIds: Array.isArray(config.filters?.therapistIds) ? config.filters.therapistIds.filter((id): id is string => typeof id === "string") : [],
-      },
-      showCriterion: config.showCriterion !== false,
-      exportMetadata: Array.isArray(config.exportMetadata) ? config.exportMetadata.filter((item): item is string => typeof item === "string") : [],
-      warnings: Array.isArray(config.warnings) ? config.warnings.filter((item): item is string => typeof item === "string") : [],
       visualAnalysis: {
         ...EMPTY_ANALYSIS,
         ...(config.visualAnalysis || {}),
