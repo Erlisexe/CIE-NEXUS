@@ -113,6 +113,10 @@ test('ensayos, ABC, firma y cierre web se guardan atómicamente y evalúan el cr
   const result = JSON.parse(f.sql.prepare('SELECT results FROM intervention_sessions').get().results)[0];
   assert.deepEqual(result.trialDetails.map((trial) => trial.responseCode), ['G', 'I']);
   assert.equal(result.criterionStatus, 'met');
+  const transitions = JSON.parse(f.sql.prepare('SELECT transitions FROM intervention_sessions').get().transitions);
+  assert.deepEqual(transitions.map(({ from, to }) => [from, to]), [['baseline', 'generalization']]);
+  assert.equal(f.sql.prepare("SELECT state FROM intervention_targets WHERE id='target-web'").get().state, 'generalization');
+  assert.equal(f.sql.prepare("SELECT mastery_method FROM target_mastery_events WHERE target_id='target-web'").get().mastery_method, 'baseline');
   assert.equal(f.sql.prepare('SELECT intensity FROM abc_records').get().intensity, 2);
   assert.equal(f.sql.prepare("SELECT count(*) AS n FROM clinical_data_audit WHERE action='web_close'").get().n, 1);
   f.sql.close();

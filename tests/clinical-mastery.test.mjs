@@ -83,10 +83,12 @@ test("Pruebas 2, 3 y 8: un segundo target suma +1 y cada target aporta una sola 
   assert.equal(replay.targetStates.get("T2"), "closed");
 });
 
-test("Prueba 4: 9/10 en Línea base cierra y registra dominio", () => {
+test("Prueba 4: 9/10 en Línea base pasa directamente a Masterizado y registra dominio", () => {
   const baselineTarget = target("T1", { threshold: 90, minTrials: 10, requiredSessions: 1, initialState: "baseline" });
   const replay = replayClinicalProgram([baselineTarget], [session("S1", "2026-08-15", [result("T1", [1,1,1,1,1,1,1,1,1,0])])]);
-  assert.equal(replay.targetStates.get("T1"), "closed");
+  assert.equal(replay.targetStates.get("T1"), "generalization");
+  assert.equal(targetStateLabel(replay.targetStates.get("T1")), "Masterizado");
+  assert.deepEqual(replay.sessions[0].transitions.map(({ from, to }) => [from, to]), [["baseline", "generalization"]]);
   assert.equal(replay.masteryEvents.length, 1);
   assert.equal(replay.masteryEvents[0].method, "baseline");
 });
@@ -95,7 +97,37 @@ test("Prueba 5: 8/10 en Línea base pasa a Adquisición sin incrementar", () => 
   const baselineTarget = target("T1", { threshold: 90, minTrials: 10, requiredSessions: 1, initialState: "baseline" });
   const replay = replayClinicalProgram([baselineTarget], [session("S1", "2026-08-15", [result("T1", [1,1,1,1,1,1,1,1,0,0])])]);
   assert.equal(replay.targetStates.get("T1"), "acquisition");
+  assert.deepEqual(replay.sessions[0].transitions.map(({ from, to }) => [from, to]), [["baseline", "acquisition"]]);
   assert.equal(replay.masteryEvents.length, 0);
+});
+
+test("Línea base no cumplida pasa a Adquisición; al cumplir después pasa a Masterizado", () => {
+  const baselineTarget = target("T1", { threshold: 90, minTrials: 10, requiredSessions: 1, initialState: "baseline" });
+  const replay = replayClinicalProgram([baselineTarget], [
+    session("S1", "2026-08-15", [result("T1", [1,1,1,1,1,1,1,1,0,0])]),
+    session("S2", "2026-08-16", [result("T1", [1,1,1,1,1,1,1,1,1,0])]),
+  ]);
+  assert.deepEqual(replay.sessions.flatMap((item) => item.transitions.map(({ from, to }) => [from, to])), [["baseline", "acquisition"], ["acquisition", "generalization"]]);
+  assert.equal(replay.masteryEvents.length, 1);
+  assert.equal(replay.masteryEvents[0].method, "acquisition");
+});
+
+test("Línea base que cumple continúa Masterizado → Generalizado → Cerrado sin volver a Adquisición ni duplicar dominio", () => {
+  const baselineTarget = target("T1", { threshold: 90, minTrials: 10, requiredSessions: 1, initialState: "baseline" });
+  const trials = [1,1,1,1,1,1,1,1,1,0];
+  const replay = replayClinicalProgram([baselineTarget], [
+    session("S1", "2026-08-15", [result("T1", trials)]),
+    session("S2", "2026-08-16", [result("T1", trials)]),
+    session("S3", "2026-08-17", [result("T1", trials)]),
+  ]);
+  assert.deepEqual(replay.sessions.flatMap((item) => item.transitions.map(({ from, to }) => [from, to])), [
+    ["baseline", "generalization"],
+    ["generalization", "maintenance"],
+    ["maintenance", "closed"],
+  ]);
+  assert.equal(replay.targetStates.get("T1"), "closed");
+  assert.equal(replay.masteryEvents.length, 1);
+  assert.equal(replay.masteryEvents[0].sessionId, "S1");
 });
 
 test("Prueba 6: 9/9 se conserva como 100%, queda insuficiente y no rompe la secuencia", () => {

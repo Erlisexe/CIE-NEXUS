@@ -272,9 +272,9 @@ export function replayClinicalProgram(targets: ReplayTarget[], sessions: ReplayS
       let to: TargetState | null = null;
       let reason = "";
       if (state === "baseline" && stageEvidence.length >= criterion.requiredSessions) {
-        to = window.met ? "closed" : "acquisition";
+        to = window.met ? "generalization" : "acquisition";
         reason = window.met
-          ? `Línea base superada: ${criterion.requiredSessions} sesión(es) cumplieron el criterio; la habilidad ya estaba presente.`
+          ? `Línea base superada: ${criterion.requiredSessions} sesión(es) cumplieron el criterio; la habilidad ya estaba presente y pasa a Masterizado.`
           : "Línea base completada sin alcanzar el criterio; el target pasa a Adquisición.";
       } else if (state !== "baseline" && window.ready && window.met) {
         to = nextState(state);
@@ -284,7 +284,7 @@ export function replayClinicalProgram(targets: ReplayTarget[], sessions: ReplayS
       if (to && to !== state) {
         targetStates.set(target.id, to);
         transitions.push({ targetId: target.id, code: target.code, targetName: target.name, from: state, to, reason });
-        if ((state === "baseline" && to === "closed") || state === "acquisition") {
+        if ((state === "baseline" && to === "generalization") || state === "acquisition") {
           if (!masteryByTarget.has(target.id)) {
             masteryByTarget.set(target.id, {
               targetId: target.id,
