@@ -1,4 +1,7 @@
 export type GraphType = "line" | "bar" | "cumulative";
+export type ClinicalGraphScope = "program" | "targets";
+export type ClinicalGraphMetric = "percentage" | "count" | "opportunities" | "rate" | "value" | "mastered";
+export type ClinicalGraphGrouping = "session" | "day" | "week" | "month";
 
 export type LineDesign =
   | "simple"
@@ -62,6 +65,10 @@ export type GraphConfig = {
   showLegend: boolean;
   showValues: boolean;
   dataSource: "manual" | "sessions";
+  clinicalScope: ClinicalGraphScope;
+  clinicalMetric: ClinicalGraphMetric;
+  clinicalGrouping: ClinicalGraphGrouping;
+  cumulativeValues: "increments" | "totals";
   sourceTargetIds: string[];
   dateFrom: string;
   dateTo: string;
@@ -140,11 +147,34 @@ export const DEFAULT_GRAPH_CONFIG: GraphConfig = {
   showLegend: true,
   showValues: false,
   dataSource: "manual",
+  clinicalScope: "targets",
+  clinicalMetric: "value",
+  clinicalGrouping: "session",
+  cumulativeValues: "increments",
   sourceTargetIds: [],
   dateFrom: "",
   dateTo: "",
   visualAnalysis: EMPTY_ANALYSIS,
 };
+
+export function cumulativeSeriesValues(points: GraphPoint[], mode: GraphConfig["cumulativeValues"]): Map<string, number | null> {
+  const totals = new Map<string, number>();
+  const values = new Map<string, number | null>();
+  for (const point of points) {
+    if (point.value === null) { values.set(point.id, null); continue; }
+    const series = point.series || "Datos";
+    const previous = totals.get(series) || 0;
+    const total = mode === "totals" ? Math.max(previous, point.value) : previous + Math.max(0, point.value);
+    totals.set(series, total);
+    values.set(point.id, total);
+  }
+  return values;
+}
+
+export function stepGraphPath(points: Array<{ x: number; y: number }>) {
+  if (!points.length) return "";
+  return `M ${points[0].x} ${points[0].y} ${points.slice(1).map((point) => `H ${point.x} V ${point.y}`).join(" ")}`.trim();
+}
 
 export function graphLocalId() {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
@@ -183,6 +213,10 @@ export function normalizeGraph(raw: Record<string, unknown>): AnalyticGraph {
       ...DEFAULT_GRAPH_CONFIG,
       ...config,
       dataSource: config.dataSource === "sessions" ? "sessions" : "manual",
+      clinicalScope: config.clinicalScope === "program" ? "program" : "targets",
+      clinicalMetric: (["percentage", "count", "opportunities", "rate", "value", "mastered"] as const).includes(config.clinicalMetric as ClinicalGraphMetric) ? config.clinicalMetric as ClinicalGraphMetric : "value",
+      clinicalGrouping: (["session", "day", "week", "month"] as const).includes(config.clinicalGrouping as ClinicalGraphGrouping) ? config.clinicalGrouping as ClinicalGraphGrouping : "session",
+      cumulativeValues: config.cumulativeValues === "totals" ? "totals" : "increments",
       sourceTargetIds: Array.isArray(config.sourceTargetIds) ? config.sourceTargetIds.filter((id): id is string => typeof id === "string") : [],
       dateFrom: typeof config.dateFrom === "string" ? config.dateFrom : "",
       dateTo: typeof config.dateTo === "string" ? config.dateTo : "",

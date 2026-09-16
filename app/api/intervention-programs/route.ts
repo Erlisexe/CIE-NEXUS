@@ -115,6 +115,8 @@ function normalizeProgramGraphConfig(value: unknown, targets: Array<{ id: string
     graphType: GRAPH_TYPES.has(textValue(raw.graphType)) ? textValue(raw.graphType) : "line",
     designType: LINE_DESIGNS.has(textValue(raw.designType)) ? textValue(raw.designType) : "AB",
     primaryTargetId,
+    clinicalMetric: ["percentage", "count", "opportunities", "rate", "mastered"].includes(textValue(raw.clinicalMetric)) ? textValue(raw.clinicalMetric) : "percentage",
+    clinicalGrouping: ["session", "day", "week", "month"].includes(textValue(raw.clinicalGrouping)) ? textValue(raw.clinicalGrouping) : "session",
     showPoints: raw.showPoints !== false,
     showLegend: raw.showLegend !== false,
   };

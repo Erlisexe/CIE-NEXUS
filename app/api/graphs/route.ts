@@ -106,6 +106,10 @@ function sanitizeConfig(value: unknown): GraphConfig {
     showLegend: config.showLegend !== false,
     showValues: config.showValues === true,
     dataSource: config.dataSource === "sessions" ? "sessions" : "manual",
+    clinicalScope: config.clinicalScope === "program" ? "program" : "targets",
+    clinicalMetric: ["percentage", "count", "opportunities", "rate", "value", "mastered"].includes(String(config.clinicalMetric)) ? config.clinicalMetric as GraphConfig["clinicalMetric"] : "value",
+    clinicalGrouping: ["session", "day", "week", "month"].includes(String(config.clinicalGrouping)) ? config.clinicalGrouping as GraphConfig["clinicalGrouping"] : "session",
+    cumulativeValues: config.cumulativeValues === "totals" ? "totals" : "increments",
     sourceTargetIds: Array.isArray(config.sourceTargetIds)
       ? config.sourceTargetIds.map((item) => textValue(item, 80)).filter(Boolean).slice(0, 50)
       : [],

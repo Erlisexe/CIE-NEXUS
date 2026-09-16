@@ -314,13 +314,13 @@ export function buildCumulativeMasteryTimeline(
   const uniqueEvents = [...new Map([...events]
     .sort((a, b) => a.masteredAt.localeCompare(b.masteredAt) || a.targetId.localeCompare(b.targetId))
     .map((event) => [event.targetId, event])).values()];
-  const before = uniqueEvents.filter((event) => dateFrom && event.masteredAt < dateFrom);
-  const inRange = uniqueEvents.filter((event) => (!dateFrom || event.masteredAt >= dateFrom) && (!dateTo || event.masteredAt <= dateTo));
+  const before = uniqueEvents.filter((event) => dateFrom && event.masteredAt.slice(0, 10) < dateFrom);
+  const inRange = uniqueEvents.filter((event) => (!dateFrom || event.masteredAt.slice(0, 10) >= dateFrom) && (!dateTo || event.masteredAt.slice(0, 10) <= dateTo));
   const moments = sessions
     .filter((session) => (!dateFrom || session.sessionDate >= dateFrom) && (!dateTo || session.sessionDate <= dateTo))
     .map((session) => ({ id: session.id, date: session.sessionDate }));
   for (const event of inRange) {
-    if (!moments.some((moment) => moment.id === event.sessionId)) moments.push({ id: `mastery-${event.id}`, date: event.masteredAt });
+    if (!moments.some((moment) => moment.id === event.sessionId)) moments.push({ id: `mastery-${event.id}`, date: event.masteredAt.slice(0, 10) });
   }
   moments.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
   const counted = new Set(before.map((event) => event.targetId));

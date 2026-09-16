@@ -33,6 +33,8 @@ import {
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DEFAULT_GRAPH_CONFIG,
+  cumulativeSeriesValues,
+  stepGraphPath,
   GRAPH_TYPE_LABELS,
   LINE_DESIGN_LABELS,
   MEASUREMENT_OPTIONS,
@@ -47,9 +49,12 @@ import {
   type LineDesign,
   type PhaseBoundary,
   type VisualAnalysis,
+  type ClinicalGraphMetric,
+  type ClinicalGraphGrouping,
 } from "../../lib/graph-types";
 import {
   CLINICAL_MEASUREMENT_LABELS,
+  CLINICAL_GRAPH_METRIC_LABELS,
   buildSessionGraph,
   measurementScale,
   type ClinicalProgram,
@@ -100,7 +105,7 @@ export type AutomaticCycle = {
 };
 
 const SITE_LABELS = ["León", "Santo Domingo", "Las Colinas", "Estelí", "Masaya"];
-const COLORS = ["#16654c", "#466b8f", "#b66b32", "#8a5d91", "#b34f55", "#5f7f35"];
+const COLORS = ["#0080D8", "#E04838", "#F0D008"];
 const MARKERS = ["circle", "square", "triangle", "diamond"] as const;
 const AUTO_GRAPH_LABELS = {
   line: "Trayectoria por área",
@@ -463,19 +468,7 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const horizontalInset = edgeInset && graph.graphType !== "bar" && labels.length > 1 ? 30 : 0;
-  const cumulativeById = new Map<string, number | null>();
-  if (graph.graphType === "cumulative") {
-    series.forEach((name) => {
-      let total = 0;
-      graph.points.filter((point) => (point.series || "Datos") === name).forEach((point) => {
-        if (point.value === null) cumulativeById.set(point.id, null);
-        else {
-          total += Math.max(0, point.value);
-          cumulativeById.set(point.id, total);
-        }
-      });
-    });
-  }
+  const cumulativeById = graph.graphType === "cumulative" ? cumulativeSeriesValues(graph.points, graph.config.cumulativeValues) : new Map<string, number | null>();
   const plottedValues = graph.points.flatMap((point) => {
     const value = graph.graphType === "cumulative" ? cumulativeById.get(point.id) : point.value;
     return [value, graph.designType === "changing-criterion" ? point.criterion : null].filter((item): item is number => typeof item === "number" && Number.isFinite(item));
@@ -571,7 +564,7 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
       if (currentSegment.length) segments.push(currentSegment);
       const color = COLORS[seriesIndex % COLORS.length];
       return <g key={name}>
-        {graph.config.connectPoints && segments.map((segment, segmentIndex) => segment.length > 1 ? <path key={`${name}-segment-${segmentIndex}`} d={segment.map((item, index) => `${index ? "L" : "M"} ${x(item.point.label)} ${y(item.value)}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/> : null)}
+        {graph.config.connectPoints && segments.map((segment, segmentIndex) => segment.length > 1 ? <path key={`${name}-segment-${segmentIndex}`} d={graph.graphType === "cumulative" ? stepGraphPath(segment.map((item) => ({ x: x(item.point.label), y: y(item.value) }))) : segment.map((item, index) => `${index ? "L" : "M"} ${x(item.point.label)} ${y(item.value)}`).join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="miter" strokeLinecap="round"/> : null)}
         {plotted.map((item) => <g key={item.point.id}>
           <title>{pointTooltip(item.point, item.value)}</title>
           {graph.config.showPoints && markerShape(MARKERS[seriesIndex % MARKERS.length], x(item.point.label), y(item.value), color, `${item.point.id}-mark`)}
@@ -607,9 +600,14 @@ export function GraphCanvas({ graph, showLegend = true, density = "standard", ed
       const left = x(labels[phase.afterIndex - 1]);
       const right = x(labels[phase.afterIndex]);
       const px = (left + right) / 2;
-      return <line key={phase.id} x1={px} x2={px} y1={margin.top - 15} y2={margin.top + innerHeight} stroke="#6c7771" strokeWidth="1.5" strokeDasharray="6 5"/>;
+      return <line key={phase.id} x1={px} x2={px} y1={margin.top - 13} y2={margin.top + innerHeight} stroke="#6c7771" strokeWidth="1.5" strokeDasharray="6 5"/>;
     })}
-    {graph.graphType === "line" && phaseRanges.map((range, index) => range.label ? <text key={`phase-label-${index}`} x={(x(labels[range.start]) + x(labels[range.end])) / 2} y={margin.top - 27} textAnchor="middle" fontSize="11" fontWeight="800" fill="#46554e">{range.label}</text> : null)}
+    {graph.graphType === "line" && phaseRanges.map((range, index) => range.label ? (() => {
+      const center = (x(labels[range.start]) + x(labels[range.end])) / 2;
+      const available = Math.max(50, x(labels[range.end]) - x(labels[range.start]) + 55);
+      const clipped = range.label.length * 7 > available ? `${range.label.slice(0, Math.max(5, Math.floor(available / 7) - 1))}…` : range.label;
+      return <g key={`phase-label-${index}`}><title>{range.label}</title><rect x={center - Math.min(available, clipped.length * 7 + 12) / 2} y={margin.top - 46} width={Math.min(available, clipped.length * 7 + 12)} height="20" rx="4" fill="#ffffff"/><text x={center} y={margin.top - 32} textAnchor="middle" fontSize="11" fontWeight="800" fill="#46554e">{clipped}</text></g>;
+    })() : null)}
 
     {showLegend && graph.config.showLegend && series.length > 1 && <g transform={`translate(${margin.left} ${rotateXLabels ? 76 : height - 48})`}>
       {series.map((name, index) => <g key={`legend-${name}`} transform={`translate(${index * Math.min(180, innerWidth / series.length)} 0)`}>
@@ -627,6 +625,7 @@ export default function GraphManager({
   initialProgramId = null,
   notify,
   canManage = true,
+  onOpenABC,
 }: {
   cycles: AutomaticCycle[];
   profiles: LinkableProfile[];
@@ -634,6 +633,7 @@ export default function GraphManager({
   initialProgramId?: string | null;
   notify: (text: string) => void;
   canManage?: boolean;
+  onOpenABC?: () => void;
 }) {
   const [graphs, setGraphs] = useState<AnalyticGraph[]>([]);
   const [programs, setPrograms] = useState<AutomaticProgram[]>([]);
@@ -655,6 +655,9 @@ export default function GraphManager({
   const [automaticProfileId, setAutomaticProfileId] = useState("");
   const [automaticProgramId, setAutomaticProgramId] = useState("");
   const [automaticTargetIds, setAutomaticTargetIds] = useState<string[]>([]);
+  const [clinicalScope, setClinicalScope] = useState<"program" | "targets">("program");
+  const [clinicalMetric, setClinicalMetric] = useState<ClinicalGraphMetric>("percentage");
+  const [clinicalGrouping, setClinicalGrouping] = useState<ClinicalGraphGrouping>("session");
   const [automaticDateFrom, setAutomaticDateFrom] = useState("");
   const [automaticDateTo, setAutomaticDateTo] = useState("");
   const [automaticDesign, setAutomaticDesign] = useState<LineDesign>("AB");
@@ -692,7 +695,7 @@ export default function GraphManager({
   });
 
   const selected = useMemo(() => graphs.find((graph) => graph.id === selectedId) || null, [graphs, selectedId]);
-  const activeProgramOptions = programs.filter((program) => program.status === "active");
+  const activeProgramOptions = programs.filter((program) => program.targets.length > 0);
   const profilesWithPrograms = profiles.filter((profile) => activeProgramOptions.some((program) => program.profileId === profile.id));
   const effectiveAutomaticProfileId = profilesWithPrograms.some((profile) => profile.id === automaticProfileId)
     ? automaticProfileId
@@ -705,7 +708,7 @@ export default function GraphManager({
     : automaticProgramOptions[0]?.id || "";
   const effectiveAutomaticProgram = automaticProgramOptions.find((program) => program.id === effectiveAutomaticProgramId) || null;
   const validAutomaticTargets = effectiveAutomaticProgram?.targets.filter((target) => automaticTargetIds.includes(target.id)) || [];
-  const effectiveAutomaticTargets = automaticType === "cumulative"
+  const effectiveAutomaticTargets = automaticType === "cumulative" || clinicalScope === "program"
     ? effectiveAutomaticProgram?.targets || []
     : validAutomaticTargets.length ? validAutomaticTargets : effectiveAutomaticProgram?.targets.slice(0, 1) || [];
   const effectiveAutomaticTargetIds = effectiveAutomaticTargets.map((target) => target.id);
@@ -774,11 +777,14 @@ export default function GraphManager({
     title: automaticTitle,
     objective: automaticObjective,
     xAxisLabel: automaticXAxis,
-    yAxisLabel: automaticType === "cumulative" ? "Targets adquiridos" : automaticYAxis || effectiveAutomaticTargets[0]?.unitLabel || PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement],
+    yAxisLabel: automaticType === "cumulative" || clinicalScope === "program" && clinicalMetric === "mastered" ? "Targets masterizados" : automaticYAxis || (clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : effectiveAutomaticTargets[0]?.unitLabel || PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement]),
     config: {
       ...DEFAULT_GRAPH_CONFIG,
-      yMin: automaticScale.yMin,
-      yMax: automaticScale.yMax,
+      yMin: clinicalScope === "program" && clinicalMetric !== "percentage" ? 0 : automaticScale.yMin,
+      yMax: clinicalScope === "program" && clinicalMetric !== "percentage" ? null : automaticScale.yMax,
+      clinicalScope,
+      clinicalMetric: clinicalScope === "targets" ? "value" : clinicalMetric,
+      clinicalGrouping: clinicalScope === "program" ? clinicalGrouping : "session",
       showGrid: automaticShowGrid,
       showValues: automaticShowValues,
       connectPoints: automaticConnectPoints,
@@ -799,7 +805,7 @@ export default function GraphManager({
     const text = `${graph.title} ${graph.objective} ${graph.measurement} ${profileName(graphProfileId)} ${programName(graph.linkedProgramId)}`.toLowerCase();
     return matchesArchive && matchesType && matchesProfile && text.includes(query.trim().toLowerCase());
   });
-  const formProgramOptions = activeProgramOptions.filter((program) => !form.profileId || program.profileId === form.profileId);
+  const formProgramOptions = activeProgramOptions.filter((program) => program.status === "active" && (!form.profileId || program.profileId === form.profileId));
   const formCycleOptions = cycleOptions.filter((cycle) => !form.profileId || cycle.profileId === form.profileId);
 
   function applyProgramPresentation(program: AutomaticProgram) {
@@ -807,6 +813,9 @@ export default function GraphManager({
     const target = program.targets.find((item) => item.id === config?.primaryTargetId) || program.targets[0];
     setAutomaticSource("programs");
     setAutomaticTargetIds(target ? [target.id] : []);
+    setClinicalScope("program");
+    setClinicalMetric(config?.clinicalMetric || "percentage");
+    setClinicalGrouping(config?.clinicalGrouping || "session");
     setAutomaticType(config?.graphType || "line");
     setAutomaticDesign(config?.designType || "AB");
     setAutomaticShowPoints(config?.showPoints !== false);
@@ -1199,6 +1208,9 @@ export default function GraphManager({
     setAutomaticDensity("standard");
     setAutomaticDateFrom("");
     setAutomaticDateTo("");
+    setClinicalScope("program");
+    setClinicalMetric(effectiveAutomaticProgram?.graphConfig?.clinicalMetric || "percentage");
+    setClinicalGrouping(effectiveAutomaticProgram?.graphConfig?.clinicalGrouping || "session");
     setAutomaticDesign("AB");
     setAutomaticPhases(null);
     notify("Visualización restablecida a la configuración recomendada.");
@@ -1340,11 +1352,12 @@ export default function GraphManager({
     {automaticSource === "programs" && <section className="formation-panel automatic-graph-panel program-automatic-panel">
       <div className="automatic-graph-heading"><div><span className="automatic-source"><CircleDashed size={14}/> Fuente clínica automática</span><h2>Sesiones → mediciones → gráfica</h2><p>La configuración visual es independiente; los valores permanecen en sus sesiones de origen.</p></div><CheckCircle2 size={25}/></div>
       {profilesWithPrograms.length && effectiveAutomaticProgram && effectiveAutomaticTargets[0] ? <>
+        <div className="clinical-graph-view-switch" role="tablist" aria-label="Alcance de la gráfica clínica"><button type="button" role="tab" aria-selected={clinicalScope === "program"} className={clinicalScope === "program" ? "active" : ""} onClick={() => { setClinicalScope("program"); setAutomaticPhases(null); }}><BarChart3 size={16}/> Programa</button><button type="button" role="tab" aria-selected={clinicalScope === "targets"} className={clinicalScope === "targets" ? "active" : ""} onClick={() => { setClinicalScope("targets"); if (automaticType === "cumulative") setAutomaticType("line"); setAutomaticPhases(null); }}><Target size={16}/> Targets</button>{onOpenABC && <button type="button" onClick={onOpenABC}><ClipboardCheck size={16}/> Abrir ABC</button>}</div>
         <div className="automatic-metrics program-automatic-metrics">
           <article><small>Sesiones representadas</small><strong>{new Set(presentedProgramGraph.points.flatMap((point) => point.value !== null && point.source?.sessionId ? [point.source.sessionId] : [])).size}</strong><span>Dentro del rango seleccionado</span></article>
-          <article><small>{automaticType === "cumulative" ? "Targets del programa" : "Targets visibles"}</small><strong>{effectiveAutomaticTargets.length}</strong><span>{automaticType === "cumulative" ? "Cada uno aporta como máximo +1" : "Mismo sistema de medición"}</span></article>
+          <article><small>{automaticType === "cumulative" || clinicalScope === "program" ? "Targets del programa" : "Targets visibles"}</small><strong>{effectiveAutomaticTargets.length}</strong><span>{automaticType === "cumulative" ? "Cada uno aporta como máximo +1" : clinicalScope === "program" ? "Serie agregada sin mezclar unidades" : "Mismo sistema de medición"}</span></article>
           <article><small>{automaticType === "cumulative" ? "Eventos de dominio" : "Datos faltantes"}</small><strong>{automaticType === "cumulative" ? effectiveAutomaticProgram.masteryEvents?.length || 0 : presentedProgramGraph.points.filter((point) => point.value === null).length}</strong><span>{automaticType === "cumulative" ? "Únicos por target" : "Nunca se convierten en cero"}</span></article>
-          <article><small>Medición</small><strong className="metric-text">{automaticType === "cumulative" ? "Dominio acumulado" : PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement]}</strong><span>{automaticType === "cumulative" ? "Targets adquiridos" : effectiveAutomaticTargets[0].unitLabel}</span></article>
+          <article><small>Medición</small><strong className="metric-text">{automaticType === "cumulative" ? "Dominio acumulado" : clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement]}</strong><span>{automaticType === "cumulative" ? "Targets masterizados" : clinicalScope === "program" ? "Fuente: sesiones cerradas" : effectiveAutomaticTargets[0].unitLabel}</span></article>
         </div>
         <div className={`automatic-workbench clinical-automatic-workbench ${automaticControlsOpen ? "controls-open" : "controls-closed"}`}>
           <aside className="automatic-control-panel" aria-label="Configuración de la gráfica automática">
@@ -1354,14 +1367,16 @@ export default function GraphManager({
                 <label><span>Niño</span><select value={effectiveAutomaticProfileId} onChange={(event) => { const profileId = event.target.value; const program = activeProgramOptions.find((item) => item.profileId === profileId); setAutomaticProgramLoading(true); setAutomaticProfileId(profileId); setAutomaticProgramId(program?.id || ""); setAutomaticYAxis(""); if (program) applyProgramPresentation(program); else { setAutomaticTargetIds([]); setAutomaticPhases(null); setAutomaticType("line"); } }}>{profilesWithPrograms.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName} · {profile.site}</option>)}</select></label>
                 <label><span>Programa</span><select value={effectiveAutomaticProgramId} onChange={(event) => { const program = automaticProgramOptions.find((item) => item.id === event.target.value); setAutomaticProgramLoading(true); setAutomaticProgramId(event.target.value); setAutomaticYAxis(""); if (program) applyProgramPresentation(program); }}>{automaticProgramOptions.map((program) => <option value={program.id} key={program.id}>{program.name}</option>)}</select></label>
               </fieldset>
-              {automaticType === "cumulative" ? <fieldset><legend><Target size={14}/> Repertorio del programa</legend><small className="clinical-control-note">La acumulativa incluye automáticamente cada target dominado una sola vez. Las selecciones de series no alteran este conteo.</small></fieldset> : <fieldset><legend><Target size={14}/> Targets / series</legend><div className="automatic-target-picker">{effectiveAutomaticProgram.targets.map((target) => {
+              {automaticType === "cumulative" ? <fieldset><legend><Target size={14}/> Repertorio del programa</legend><small className="clinical-control-note">La acumulativa incluye automáticamente cada target masterizado una sola vez. Las selecciones de series no alteran este conteo.</small></fieldset> : clinicalScope === "program" ? <fieldset><legend><Target size={14}/> Programa completo</legend><small className="clinical-control-note">Se suman sólo muestras compatibles con la métrica; los targets de duración o frecuencia no se mezclan con porcentajes discretos. Los datos sin muestra no se convierten en cero.</small></fieldset> : <fieldset><legend><Target size={14}/> Targets / series</legend><div className="automatic-target-picker">{effectiveAutomaticProgram.targets.map((target) => {
                 const selectedTarget = effectiveAutomaticTargetIds.includes(target.id);
                 const incompatible = Boolean(effectiveAutomaticTargets[0] && target.measurement !== effectiveAutomaticTargets[0].measurement && !selectedTarget);
                 return <button type="button" disabled={incompatible} aria-pressed={selectedTarget} className={selectedTarget ? "selected" : ""} onClick={() => toggleAutomaticTarget(target)} key={target.id}><span>{selectedTarget ? <CheckCircle2 size={15}/> : <CircleDashed size={15}/>}</span><div><strong>{target.code} · {target.name}</strong><small>{PROGRAM_MEASUREMENT_LABELS[target.measurement]} · {target.unitLabel}{incompatible ? " · escala diferente" : ""}</small></div></button>;
               })}</div></fieldset>}
               <fieldset><legend><Filter size={14}/> Rango y formato</legend>
                 <div className="automatic-date-range"><label><span>Desde</span><input type="date" value={automaticDateFrom} onChange={(event) => setAutomaticDateFrom(event.target.value)}/></label><label><span>Hasta</span><input type="date" value={automaticDateTo} onChange={(event) => setAutomaticDateTo(event.target.value)}/></label></div>
-                <div className="automatic-graph-tabs compact" role="tablist">{(["line", "bar", "cumulative"] as GraphType[]).map((type) => <button type="button" role="tab" aria-selected={automaticType === type} className={automaticType === type ? "active" : ""} onClick={() => setAutomaticType(type)} key={type}>{type === "line" ? <LineChart size={15}/> : type === "bar" ? <BarChart3 size={15}/> : <TrendingUp size={15}/>}<span>{GRAPH_TYPE_LABELS[type]}</span></button>)}</div>
+                {clinicalScope === "program" && <label><span>Agrupar por</span><select value={clinicalGrouping} onChange={(event) => { setClinicalGrouping(event.target.value as ClinicalGraphGrouping); setAutomaticPhases(null); }}><option value="session">Sesión</option><option value="day">Día</option><option value="week">Semana</option><option value="month">Mes</option></select></label>}
+                {clinicalScope === "program" && automaticType !== "cumulative" && <label><span>Eje Y · datos de origen</span><select value={clinicalMetric} onChange={(event) => { setClinicalMetric(event.target.value as ClinicalGraphMetric); setAutomaticYAxis(""); }}><option value="percentage">% independientes/correctos · ensayos</option><option value="count">Respuestas correctas · ensayos</option><option value="opportunities">Oportunidades · ensayos</option><option value="rate">Ocurrencias/min · observación registrada</option><option value="mastered">Targets masterizados · eventos de dominio</option></select></label>}
+                <div className="automatic-graph-tabs compact" role="tablist">{(["line", "bar", "cumulative"] as GraphType[]).map((type) => <button type="button" role="tab" aria-selected={automaticType === type} className={automaticType === type ? "active" : ""} onClick={() => { setAutomaticType(type); if (type === "cumulative") setClinicalScope("program"); setAutomaticPhases(null); }} key={type}>{type === "line" ? <LineChart size={15}/> : type === "bar" ? <BarChart3 size={15}/> : <TrendingUp size={15}/>}<span>{GRAPH_TYPE_LABELS[type]}</span></button>)}</div>
                 {automaticType === "line" && <label><span>Diseño experimental</span><select value={automaticDesign} onChange={(event) => { setAutomaticDesign(event.target.value as LineDesign); setAutomaticPhases(null); }}>{Object.entries(LINE_DESIGN_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>}
                 {automaticType === "cumulative" && <small className="clinical-control-note">Esta vista representa el total histórico de targets adquiridos; nunca suma respuestas ni porcentajes de sesión.</small>}
               </fieldset>
@@ -1369,7 +1384,7 @@ export default function GraphManager({
                 <label><span>Título</span><input value={automaticTitle} maxLength={140} onChange={(event) => setAutomaticTitle(event.target.value)}/></label>
                 <label><span>Objetivo</span><textarea value={automaticObjective} onChange={(event) => setAutomaticObjective(event.target.value)}/></label>
                 <label><span>Eje horizontal</span><input value={automaticXAxis} onChange={(event) => setAutomaticXAxis(event.target.value)}/></label>
-                <label><span>Eje vertical</span><input value={automaticYAxis} placeholder={effectiveAutomaticTargets[0].unitLabel} onChange={(event) => setAutomaticYAxis(event.target.value)}/></label>
+                <label><span>Eje vertical</span><input value={automaticYAxis} placeholder={clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : effectiveAutomaticTargets[0].unitLabel} disabled={automaticType === "cumulative" || clinicalScope === "program" && clinicalMetric === "mastered"} onChange={(event) => setAutomaticYAxis(event.target.value)}/></label>
               </fieldset>
               {automaticType === "line" && <fieldset><legend><MoveHorizontal size={14}/> Fases</legend>
                 <button className="automatic-add-phase" type="button" onClick={addAutomaticPhase}><Plus size={14}/> Agregar cambio de fase</button>
@@ -1384,7 +1399,7 @@ export default function GraphManager({
             </div>}
           </aside>
           <div className="automatic-chart-stage program-chart-stage">
-            <div className="automatic-chart-toolbar"><div><span className="automatic-view-label">{effectiveAutomaticProgram.participantName} · {effectiveAutomaticProgram.site}</span><strong>{automaticTitle}</strong><small>{effectiveAutomaticProgram.name} · {automaticType === "cumulative" ? "Todos los targets del programa" : effectiveAutomaticTargets.map((target) => target.code).join(", ")}</small></div><div><button className="secondary-formation-button" disabled={!presentedProgramGraph.points.some((point) => point.value !== null)} onClick={() => exportCsv(presentedProgramGraph)}><FileDown size={15}/> CSV</button><button className="secondary-formation-button" disabled={!presentedProgramGraph.points.some((point) => point.value !== null)} onClick={() => exportSvg(presentedProgramGraph)}><Download size={15}/> SVG</button></div></div>
+            <div className="automatic-chart-toolbar"><div><span className="automatic-view-label">{effectiveAutomaticProgram.participantName} · {effectiveAutomaticProgram.site}</span><strong>{automaticTitle}</strong><small>{effectiveAutomaticProgram.name} · {automaticType === "cumulative" ? "Todos los targets del programa" : clinicalScope === "program" ? "Gráfica principal del programa" : effectiveAutomaticTargets.map((target) => target.code).join(", ")}</small></div><div><button className="secondary-formation-button" disabled={!presentedProgramGraph.points.some((point) => point.value !== null)} onClick={() => exportCsv(presentedProgramGraph)}><FileDown size={15}/> CSV</button><button className="secondary-formation-button" disabled={!presentedProgramGraph.points.some((point) => point.value !== null)} onClick={() => exportSvg(presentedProgramGraph)}><Download size={15}/> SVG</button></div></div>
             {automaticProgramLoading ? <div className="empty-state automatic-empty"><LoaderCircle className="spin" size={27}/><strong>Cargando sesiones del programa…</strong></div> : presentedProgramGraph.points.some((point) => point.value !== null) ? <><div className={`graph-canvas-scroll automatic-canvas density-${automaticDensity}`}><GraphCanvas graph={presentedProgramGraph} showLegend={automaticShowLegend} density={automaticDensity} edgeInset/></div>{automaticShowTable && <div className="automatic-data-table-wrap"><div><strong>{automaticType === "cumulative" ? "Historial acumulado de dominio" : "Datos de sesión y procedencia"}</strong><span>{presentedProgramGraph.points.filter((point) => point.value !== null).length} valores · {presentedProgramGraph.points.filter((point) => point.value === null).length} faltantes</span></div><div className="graph-data-scroll"><table className="automatic-data-table"><thead><tr><th>Fecha</th><th>Target / serie</th><th>{automaticType === "cumulative" ? "Total acumulado" : "Valor"}</th><th>Sesión</th><th>Oportunidades</th><th>Contexto y notas</th></tr></thead><tbody>{presentedProgramGraph.points.map((point) => <tr key={point.id}><td>{point.label}</td><td>{point.series}</td><td>{point.value ?? <em>Sin dato</em>}</td><td>{point.source?.sessionId || "—"}</td><td>{point.source?.opportunities ?? "—"}</td><td>{point.note || "—"}</td></tr>)}</tbody></table></div></div>}</> : <div className="empty-state automatic-empty"><CircleDashed size={27}/><strong>No hay mediciones cerradas en este rango</strong><p>Las sesiones inexistentes o targets no muestreados no se convierten en cero.</p></div>}
           </div>
         </div>
