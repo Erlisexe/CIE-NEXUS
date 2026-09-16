@@ -21,6 +21,7 @@ export class ClinicalVault {
     this.db.runSync("INSERT INTO drafts(id, started_at, status, body) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, body = excluded.body",
       draft.id, draft.startedAt, draft.status, JSON.stringify(draft));
   }
+  removeDraft(id: string) { this.db.runSync("DELETE FROM drafts WHERE id = ?", id); }
   clearSyncedAndCache() {
     this.db.withTransactionSync(() => { this.db.runSync("DELETE FROM drafts WHERE status = 'synced'"); this.db.runSync("DELETE FROM cache"); });
   }

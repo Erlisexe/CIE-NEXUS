@@ -2,9 +2,10 @@
   "expo": {
     "name": "CIE Nexus",
     "slug": "cie-nexus-mobile",
-    "version": "0.3.1",
+    "version": "0.4.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
+    "backgroundColor": "#F5F8FC",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "scheme": "cienexus",
@@ -22,17 +23,19 @@
     },
     "android": {
       "package": "org.cie.nexus.mobile",
-      "versionCode": 4,
+      "versionCode": 6,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
-      },
-      "edgeToEdgeEnabled": true
+      }
     },
     "plugins": [
       "expo-secure-store",
-      ["expo-sqlite", { "useSQLCipher": true, "enableFTS": false }]
+      ["expo-sqlite", { "useSQLCipher": true, "enableFTS": false }],
+      "expo-system-ui",
+      ["expo-status-bar", { "hidden": true, "style": "light" }],
+      ["expo-navigation-bar", { "hidden": true, "style": "dark", "enforceContrast": false }]
     ],
     "extra": {
       "apiUrl": "https://sistema-aba-clinico.silresaveuc.chatgpt.site"

@@ -4,12 +4,12 @@ import type { Session } from "@supabase/supabase-js";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,6 +18,8 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { NavigationBar } from "expo-navigation-bar";
+import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 import { BrandMark } from "./components/BrandMark";
 import { NavIcon, type NavIconName } from "./components/NavIcon";
 import { mobileGet, MobileApiError } from "./lib/api";
@@ -45,6 +47,28 @@ const CHILD_SECTIONS: Array<{ key: ChildSection; label: string }> = [
   { key: "progress", label: "Progreso" },
   { key: "plan", label: "Plan" },
 ];
+
+function ImmersiveSystemChrome() {
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const hideSystemChrome = () => {
+      StatusBar.setHidden(true, "fade");
+      NavigationBar.setHidden(true);
+    };
+    hideSystemChrome();
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") hideSystemChrome();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  return (
+    <>
+      <StatusBar animated hidden />
+      {Platform.OS === "android" ? <NavigationBar hidden /> : null}
+    </>
+  );
+}
 
 function toDateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -974,7 +998,7 @@ function ProfileScreen({ bootstrap, onSignOut }: { bootstrap: Bootstrap; onSignO
           </View>
         </Surface>
         <ActionButton label="Cerrar sesión" onPress={onSignOut} variant="coral" />
-        <Text style={styles.versionText}>CIE Nexus móvil · Versión 0.2.0</Text>
+        <Text style={styles.versionText}>CIE Nexus móvil · Versión 0.4.0</Text>
       </PageColumn>
     </ScrollView>
   );
@@ -1029,7 +1053,6 @@ function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.loginSafe}>
-      <StatusBar style="light" />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.loginKeyboard}>
         <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.loginHero}>
@@ -1171,7 +1194,6 @@ function AuthenticatedApp({ session }: { session: Session }) {
   if (loading) {
     return (
       <View style={styles.appLoading}>
-        <StatusBar style="dark" />
         <BrandMark size={86} />
         <ActivityIndicator color={colors.primary} size="large" />
         <Text style={styles.loadingLabel}>Preparando CIE Nexus…</Text>
@@ -1182,7 +1204,6 @@ function AuthenticatedApp({ session }: { session: Session }) {
   if (!bootstrap) {
     return (
       <SafeAreaView style={styles.safe}>
-        <StatusBar style="dark" />
         <View style={styles.fatalState}>
           <EmptyState title="No se pudo iniciar CIE Nexus" detail={error || "Verifica tu conexión e intenta nuevamente."} />
           <ActionButton label="Reintentar" onPress={() => void load()} />
@@ -1208,7 +1229,6 @@ function AuthenticatedApp({ session }: { session: Session }) {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
       <TopBar bootstrap={bootstrap} connected={!error} />
       {error ? (
         <Pressable accessibilityRole="button" onPress={() => void load(true)} style={styles.errorBanner}>
@@ -1272,16 +1292,19 @@ export default function CieNexusApp() {
     return () => data.subscription.unsubscribe();
   }, []);
 
-  if (session === undefined) {
-    return (
-      <View style={styles.appLoading}>
-        <StatusBar style="dark" />
-        <BrandMark size={86} />
-        <ActivityIndicator color={colors.primary} size="large" />
-      </View>
-    );
-  }
-  return session ? <AuthenticatedApp key={session.user.id} session={session} /> : <LoginScreen />;
+  const content = session === undefined ? (
+    <View style={styles.appLoading}>
+      <BrandMark size={86} />
+      <ActivityIndicator color={colors.primary} size="large" />
+    </View>
+  ) : session ? <AuthenticatedApp key={session.user.id} session={session} /> : <LoginScreen />;
+
+  return (
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <ImmersiveSystemChrome />
+      {content}
+    </SafeAreaProvider>
+  );
 }
 
 const styles = StyleSheet.create({
