@@ -1,5 +1,9 @@
 "use client";
 
+import { clientRequest } from "../../lib/client-request";
+
+import ModalLayer from "./modal-layer";
+
 import {
   Archive,
   ArrowDown,
@@ -639,6 +643,8 @@ export default function GraphManager({
   const [programs, setPrograms] = useState<AutomaticProgram[]>([]);
   const [programSessions, setProgramSessions] = useState<AutomaticProgramSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadRevision, setReloadRevision] = useState(0);
   const [saving, setSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
@@ -826,10 +832,15 @@ export default function GraphManager({
   }
 
   useEffect(() => {
-    Promise.all([fetch("/api/graphs"), fetch("/api/intervention-programs?catalog=1")])
+    const controller = new AbortController();
+    // A new program selection owns its own loading/error state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true); setLoadError("");
+    Promise.all([clientRequest("/api/graphs", { signal: controller.signal }), clientRequest("/api/intervention-programs?catalog=1", { signal: controller.signal })])
       .then(async ([graphResponse, programResponse]) => {
         const graphData = await graphResponse.json() as { graphs?: Record<string, unknown>[]; error?: string };
         const programData = await programResponse.json() as { programs?: AutomaticProgram[]; sessions?: AutomaticProgramSession[]; error?: string };
+        if (controller.signal.aborted) return;
         if (!graphResponse.ok) throw new Error(graphData.error || "No se pudieron cargar las gráficas.");
         if (!programResponse.ok) throw new Error(programData.error || "No se pudieron cargar los programas.");
         setGraphs((graphData.graphs || []).map(parseResponseGraph));
@@ -845,37 +856,42 @@ export default function GraphManager({
           applyProgramPresentation(program);
         }
       })
-      .catch((error: Error) => notify(error.message))
-      .finally(() => setLoading(false));
+      .catch((error: Error) => { if (!controller.signal.aborted) { setLoadError(error.message); notify(error.message); } })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
     // Notifications are user feedback, not a data dependency for this initial load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialProgramId]);
+  }, [initialProgramId, reloadRevision]);
 
   useEffect(() => {
     if (!effectiveAutomaticProgramId) return;
     const controller = new AbortController();
-    fetch(`/api/intervention-programs?programId=${encodeURIComponent(effectiveAutomaticProgramId)}`, { cache: "no-store", signal: controller.signal })
+    // Do not leave the previous program's graph visible under the new label.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAutomaticProgramLoading(true); setProgramSessions([]);
+    clientRequest(`/api/intervention-programs?programId=${encodeURIComponent(effectiveAutomaticProgramId)}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const data = await response.json() as { programs?: AutomaticProgram[]; sessions?: AutomaticProgramSession[]; error?: string };
+        if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(data.error || "No se pudieron cargar las sesiones del programa.");
         const refreshed = data.programs?.[0];
         if (refreshed) setPrograms((current) => current.map((program) => program.id === refreshed.id ? refreshed : program));
         setProgramSessions(data.sessions || []);
       })
       .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) notify(error instanceof Error ? error.message : "No se pudieron cargar las sesiones del programa.");
+        if (!controller.signal.aborted) { const message = error instanceof Error ? error.message : "No se pudieron cargar las sesiones del programa."; setLoadError(message); notify(message); }
       })
-      .finally(() => setAutomaticProgramLoading(false));
+      .finally(() => { if (!controller.signal.aborted) setAutomaticProgramLoading(false); });
     return () => controller.abort();
     // Program selection is the only data dependency; notification identity must not refetch clinical data.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveAutomaticProgramId]);
+  }, [effectiveAutomaticProgramId, reloadRevision]);
 
   useEffect(() => {
     const saved = graphs.find((graph) => graph.id === selectedId);
     if (!saved || saved.config.dataSource !== "sessions" || !saved.linkedProgramId) return;
     const controller = new AbortController();
-    fetch(`/api/intervention-programs?programId=${encodeURIComponent(saved.linkedProgramId)}`, { cache: "no-store", signal: controller.signal })
+    clientRequest(`/api/intervention-programs?programId=${encodeURIComponent(saved.linkedProgramId)}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const data = await response.json() as { programs?: AutomaticProgram[]; sessions?: AutomaticProgramSession[]; error?: string };
         if (!response.ok || !data.programs?.[0]) throw new Error(data.error || "No se pudo actualizar la gráfica desde sus sesiones.");
@@ -957,7 +973,7 @@ export default function GraphManager({
     const defaultMax = form.measurement === "Porcentaje" ? 100 : null;
     setSaving(true);
     try {
-      const response = await fetch("/api/graphs", {
+      const response = await clientRequest("/api/graphs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...form, profileId: form.profileId || null, linkedProgramId: form.linkedProgramId || null, linkedCycleId: form.linkedCycleId || null, points, phases, config: { ...DEFAULT_GRAPH_CONFIG, yMax: defaultMax } }),
@@ -978,7 +994,7 @@ export default function GraphManager({
     if (!selected) return;
     setSaving(true);
     try {
-      const response = await fetch("/api/graphs", {
+      const response = await clientRequest("/api/graphs", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(selected),
@@ -1063,7 +1079,7 @@ export default function GraphManager({
     setSaving(true);
     try {
       const action = graph.status === "archived" ? "restore" : "archive";
-      const response = await fetch("/api/graphs", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: graph.id, action }) });
+      const response = await clientRequest("/api/graphs", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: graph.id, action }) });
       const data = await response.json() as { graph?: Record<string, unknown>; error?: string };
       if (!response.ok || !data.graph) throw new Error(data.error || "No se pudo cambiar el estado.");
       const saved = parseResponseGraph(data.graph);
@@ -1078,7 +1094,7 @@ export default function GraphManager({
     if (!deleteTarget || deleteText.trim().toUpperCase() !== "ELIMINAR") return;
     setSaving(true);
     try {
-      const response = await fetch("/api/graphs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: deleteTarget.id }) });
+      const response = await clientRequest("/api/graphs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: deleteTarget.id }) });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "No se pudo eliminar la gráfica.");
       setGraphs((current) => current.filter((graph) => graph.id !== deleteTarget.id));
@@ -1095,7 +1111,7 @@ export default function GraphManager({
     setHistory([]);
     setHistoryLoading(true);
     try {
-      const response = await fetch(`/api/graphs?historyFor=${encodeURIComponent(graph.id)}`);
+      const response = await clientRequest(`/api/graphs?historyFor=${encodeURIComponent(graph.id)}`);
       const data = await response.json() as { history?: HistoryEntry[]; error?: string };
       if (!response.ok) throw new Error(data.error || "No se pudo cargar el historial.");
       setHistory(data.history || []);
@@ -1166,7 +1182,7 @@ export default function GraphManager({
     if (!automaticTitle.trim() || !automaticObjective.trim()) { notify("Completa el título y el objetivo de la configuración."); return; }
     setSaving(true);
     try {
-      const response = await fetch("/api/graphs", {
+      const response = await clientRequest("/api/graphs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1299,6 +1315,7 @@ export default function GraphManager({
     </>;
   }
 
+  if (loadError) return <div className="load-error" role="alert"><p>{loadError}</p><button onClick={() => setReloadRevision(current => current + 1)}>Reintentar carga</button></div>;
   return <>
     <div className="formation-heading graph-library-heading"><div><p className="section-kicker">Centro de análisis</p><h1>Gráficas</h1></div>{canManage && <button className="primary-formation-button" onClick={() => { resetForm(); setNewOpen(true); }}><Plus size={17}/> Gráfica manual</button>}</div>
     <div className="automatic-source-switch" role="tablist" aria-label="Fuente de las gráficas automáticas">
@@ -1422,7 +1439,7 @@ export default function GraphManager({
     </section>
     <section className="graph-safety-note institutional"><CheckCircle2 size={20}/><div><strong>Las comparaciones agregadas se mantienen no punitivas</strong><p>La plataforma conserva el orden que definas y no genera puestos, ganadores, perdedores ni conclusiones de competencia entre sedes o personas.</p></div></section>
 
-    {newOpen && <div className="modal-backdrop"><section className="graph-create-modal" role="dialog" aria-modal="true" aria-labelledby="graph-create-title"><div className="modal-title"><div><p className="section-kicker">Nueva visualización</p><h2 id="graph-create-title">Crear gráfica</h2></div><button aria-label="Cerrar" onClick={() => setNewOpen(false)}><X size={19}/></button></div><p className="modal-intro">Selecciona el formato según la pregunta que necesitas responder. Podrás cambiar los datos, ejes y fases dentro del editor.</p><div className="graph-type-picker">{(["line", "bar", "cumulative"] as GraphType[]).map((type) => <button key={type} className={form.graphType === type ? "selected" : ""} onClick={() => setForm({ ...form, graphType: type, designType: type === "line" ? form.designType : "simple", xAxisLabel: type === "bar" ? "Categorías" : "Sesiones", yAxisLabel: type === "cumulative" ? "Repertorio acumulado" : form.measurement })}>{type === "line" ? <LineChart size={22}/> : type === "bar" ? <BarChart3 size={22}/> : <TrendingUp size={22}/>}<strong>{GRAPH_TYPE_LABELS[type]}</strong><small>{type === "line" ? "Seguimiento y diseños" : type === "bar" ? "Comparar condiciones" : "Sumar repertorio"}</small></button>)}</div><div className="modal-form graph-create-form">
+    {newOpen && <ModalLayer onDismiss={() => setNewOpen(false)} className="modal-backdrop"><section className="graph-create-modal" role="dialog" aria-modal="true" aria-labelledby="graph-create-title"><div className="modal-title"><div><p className="section-kicker">Nueva visualización</p><h2 id="graph-create-title">Crear gráfica</h2></div><button aria-label="Cerrar" onClick={() => setNewOpen(false)}><X size={19}/></button></div><p className="modal-intro">Selecciona el formato según la pregunta que necesitas responder. Podrás cambiar los datos, ejes y fases dentro del editor.</p><div className="graph-type-picker">{(["line", "bar", "cumulative"] as GraphType[]).map((type) => <button key={type} className={form.graphType === type ? "selected" : ""} onClick={() => setForm({ ...form, graphType: type, designType: type === "line" ? form.designType : "simple", xAxisLabel: type === "bar" ? "Categorías" : "Sesiones", yAxisLabel: type === "cumulative" ? "Repertorio acumulado" : form.measurement })}>{type === "line" ? <LineChart size={22}/> : type === "bar" ? <BarChart3 size={22}/> : <TrendingUp size={22}/>}<strong>{GRAPH_TYPE_LABELS[type]}</strong><small>{type === "line" ? "Seguimiento y diseños" : type === "bar" ? "Comparar condiciones" : "Sumar repertorio"}</small></button>)}</div><div className="modal-form graph-create-form">
       <label><span>Nombre de la gráfica</span><input autoFocus maxLength={140} value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Ej. Integridad de implementación"/></label>
       {form.graphType === "line" && <label><span>Diseño inicial</span><select value={form.designType} onChange={(event) => setForm({ ...form, designType: event.target.value as LineDesign })}>{Object.entries(LINE_DESIGN_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>}
       <label className="field-wide"><span>Objetivo principal</span><textarea value={form.objective} onChange={(event) => setForm({ ...form, objective: event.target.value })} placeholder="Qué medida representa, para qué decisión se utilizará y cuál es su unidad de análisis."/></label>
@@ -1431,8 +1448,8 @@ export default function GraphManager({
       <label><span>Método de medición</span><select value={form.measurement} onChange={(event) => setForm({ ...form, measurement: event.target.value, yAxisLabel: event.target.value })}>{MEASUREMENT_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select></label>
       <label><span>Evaluación vinculada (opcional)</span><select disabled={!form.profileId} value={form.linkedCycleId} onChange={(event) => setForm({ ...form, linkedCycleId: event.target.value })}><option value="">Sin evaluación específica</option>{formCycleOptions.map((cycle) => <option value={cycle.id} key={cycle.id}>{cycle.label} · {cycle.site}</option>)}</select></label>
       <label><span>Eje horizontal</span><input value={form.xAxisLabel} onChange={(event) => setForm({ ...form, xAxisLabel: event.target.value })}/></label><label><span>Eje vertical</span><input value={form.yAxisLabel} onChange={(event) => setForm({ ...form, yAxisLabel: event.target.value })}/></label>
-    </div><div className="modal-foot"><span><CheckCircle2 size={15}/> Datos persistentes e historial de cambios</span><div><button className="secondary-formation-button" onClick={() => setNewOpen(false)}>Cancelar</button><button className="primary-formation-button" disabled={saving || !form.title.trim() || !form.objective.trim()} onClick={createGraph}>{saving ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>} Crear gráfica</button></div></div></section></div>}
-    {deleteTarget && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-graph-title"><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-graph-title">Eliminar gráfica permanentemente</h2><p>Se eliminarán la configuración, todos los datos, el análisis visual y <strong>todo el historial</strong> de “{deleteTarget.title}”. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={deleteText.trim().toUpperCase() !== "ELIMINAR" || saving} onClick={deleteGraph}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></div>}
-    {historyTarget && <div className="modal-backdrop"><section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="graph-history-title"><div className="modal-title"><div><p className="section-kicker">Trazabilidad</p><h2 id="graph-history-title">Historial de la gráfica</h2></div><button aria-label="Cerrar historial" onClick={() => setHistoryTarget(null)}><X size={19}/></button></div><p className="modal-intro"><strong>{historyTarget.title}</strong>. El historial se elimina automáticamente si eliminas esta gráfica.</p><div className="history-timeline">{historyLoading ? <div className="empty-state"><LoaderCircle className="spin" size={24}/><strong>Cargando historial…</strong></div> : history.length ? history.map((entry) => <article key={entry.id}><span><Clock3 size={15}/></span><div><strong>{entry.summary}</strong>{entry.details && <p>{entry.details}</p>}<small>{new Date(entry.createdAt).toLocaleString("es-NI", { dateStyle: "medium", timeStyle: "short" })}</small></div></article>) : <div className="empty-state"><CircleDashed size={26}/><strong>Sin modificaciones registradas</strong></div>}</div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setHistoryTarget(null)}>Cerrar</button></div></section></div>}
+    </div><div className="modal-foot"><span><CheckCircle2 size={15}/> Datos persistentes e historial de cambios</span><div><button className="secondary-formation-button" onClick={() => setNewOpen(false)}>Cancelar</button><button className="primary-formation-button" disabled={saving || !form.title.trim() || !form.objective.trim()} onClick={createGraph}>{saving ? <LoaderCircle className="spin" size={16}/> : <Plus size={16}/>} Crear gráfica</button></div></div></section></ModalLayer>}
+    {deleteTarget && <ModalLayer onDismiss={() => setDeleteTarget(null)} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-graph-title"><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-graph-title">Eliminar gráfica permanentemente</h2><p>Se eliminarán la configuración, todos los datos, el análisis visual y <strong>todo el historial</strong> de “{deleteTarget.title}”. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={deleteText.trim().toUpperCase() !== "ELIMINAR" || saving} onClick={deleteGraph}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></ModalLayer>}
+    {historyTarget && <ModalLayer onDismiss={() => setHistoryTarget(null)} className="modal-backdrop"><section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="graph-history-title"><div className="modal-title"><div><p className="section-kicker">Trazabilidad</p><h2 id="graph-history-title">Historial de la gráfica</h2></div><button aria-label="Cerrar historial" onClick={() => setHistoryTarget(null)}><X size={19}/></button></div><p className="modal-intro"><strong>{historyTarget.title}</strong>. El historial se elimina automáticamente si eliminas esta gráfica.</p><div className="history-timeline">{historyLoading ? <div className="empty-state"><LoaderCircle className="spin" size={24}/><strong>Cargando historial…</strong></div> : history.length ? history.map((entry) => <article key={entry.id}><span><Clock3 size={15}/></span><div><strong>{entry.summary}</strong>{entry.details && <p>{entry.details}</p>}<small>{new Date(entry.createdAt).toLocaleString("es-NI", { dateStyle: "medium", timeStyle: "short" })}</small></div></article>) : <div className="empty-state"><CircleDashed size={26}/><strong>Sin modificaciones registradas</strong></div>}</div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setHistoryTarget(null)}>Cerrar</button></div></section></ModalLayer>}
   </>;
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { clientRequest } from "../../lib/client-request";
+
 import {
   Activity,
   ArrowLeft,
@@ -152,6 +154,8 @@ export default function ChildProfileWorkspace({
 }) {
   const [data, setData] = useState<Dossier | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadRevision, setReloadRevision] = useState(0);
   const [section, setSection] = useState<SectionKey>("overview");
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -161,7 +165,7 @@ export default function ChildProfileWorkspace({
 
   const loadDossier = useCallback(async () => {
     try {
-      const response = await fetch(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store" });
+      const response = await clientRequest(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store" });
       const payload = await response.json() as Dossier & { error?: string };
       if (!response.ok) throw new Error(payload.error || "No se pudo cargar el expediente.");
       payload.profile.responsibles = profile.responsibles;
@@ -173,20 +177,23 @@ export default function ChildProfileWorkspace({
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store", signal: controller.signal })
+    // Never show the previous child's dossier while a new identity is loading.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true); setData(null); setLoadError("");
+    clientRequest(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const payload = await response.json() as Dossier & { error?: string };
         if (!response.ok) throw new Error(payload.error || "No se pudo cargar el expediente.");
         payload.profile.responsibles = profile.responsibles;
         return payload;
       })
-      .then((payload) => setData(payload))
+      .then((payload) => { if (!controller.signal.aborted) setData(payload); })
       .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) notify(error instanceof Error ? error.message : "No se pudo cargar el expediente.");
+        if (!controller.signal.aborted) { const message = error instanceof Error ? error.message : "No se pudo cargar el expediente."; setLoadError(message); notify(message); }
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [notify, profile.id, profile.responsibles, profile.updatedAt]);
+  }, [notify, profile.id, profile.responsibles, profile.updatedAt, reloadRevision]);
 
   const child = data?.profile || profile;
   const age = ageFrom(child.dateOfBirth);
@@ -227,7 +234,7 @@ export default function ChildProfileWorkspace({
       form.set("profileId", profile.id);
       form.set("file", file);
       form.set("description", description);
-      const response = await fetch("/api/child-documents", { method: "POST", body: form });
+      const response = await clientRequest("/api/child-documents", { method: "POST", body: form });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error || "No se pudo subir el documento.");
       setFile(null);
@@ -244,7 +251,7 @@ export default function ChildProfileWorkspace({
   async function deleteDocument(document: Document) {
     if (!window.confirm(`¿Eliminar ${document.fileName} del expediente?`)) return;
     try {
-      const response = await fetch("/api/child-documents", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: document.id }) });
+      const response = await clientRequest("/api/child-documents", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: document.id }) });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error || "No se pudo eliminar el documento.");
       await loadDossier();
@@ -314,6 +321,7 @@ export default function ChildProfileWorkspace({
     return <section className="child-section-card service-plan"><header><div><p className="section-kicker">Plan de servicio</p><h2>Programas y objetivos del niño</h2><p>Esta vista se alimenta automáticamente de los programas vinculados al expediente.</p></div><button className="primary-formation-button" onClick={onOpenPrograms}>Gestionar programas</button></header>{data.programs.length ? <div className="service-programs">{data.programs.map((program, index) => <article key={program.id}><header><span>{String(index + 1).padStart(2, "0")}</span><div><small>{statusLabel(program.status)}</small><h3>{program.name}</h3><p>{program.objective}</p></div></header>{program.instructions && <div className="service-instructions"><strong>Procedimiento</strong><p>{program.instructions}</p></div>}<div className="service-targets">{program.targets.length ? program.targets.map((target) => <div key={target.id}><span>{target.code}</span><div><strong>{target.name}</strong><p>{target.specificObjective}</p></div><em>{statusLabel(target.state)}</em></div>) : <p className="no-targets">Este programa todavía no tiene objetivos específicos.</p>}</div></article>)}</div> : <EmptySection title="Plan de servicio pendiente" text="Los programas del niño aparecerán aquí como su plan de servicio integrado."/>}</section>;
   }
 
+  if (loadError) return <div className="load-error" role="alert"><p>{loadError}</p><button onClick={() => setReloadRevision(current => current + 1)}>Reintentar carga</button><button onClick={onBack}>Volver a niños</button></div>;
   return <div className="child-dossier">
     <button className="back-button child-back" onClick={onBack}><ArrowLeft size={17}/> Volver al directorio de niños</button>
     <section className="child-identity-card"><ProfilePhoto name={child.fullName} src={child.photoUrl} avatarClassName="child-avatar" editable={canManage} uploading={photoUploading} onFile={changePhoto}/><div className="child-identity-copy"><p className="section-kicker">Expediente infantil</p><h1>{child.fullName}</h1><p><MapPin size={14}/> Sede {child.site}{child.internalCode ? ` · ${child.internalCode}` : ""}</p><div><span className={`child-status ${child.status === "archived" ? "archived" : ""}`}><CheckCircle2 size={13}/> {statusLabel(child.status)}</span>{age !== null && <span><CalendarDays size={13}/> {age} años</span>}{child.diagnosis && <span><Stethoscope size={13}/> {child.diagnosis}</span>}</div></div><div className="child-identity-actions"><small>Expediente centralizado</small>{canManage && <button className="secondary-formation-button" onClick={onEdit}><Edit3 size={15}/> Editar datos</button>}</div></section>

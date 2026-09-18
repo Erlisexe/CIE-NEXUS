@@ -1,4 +1,6 @@
 "use client";
+
+import ModalLayer from "./modal-layer";
 /* eslint-disable @next/next/no-img-element */
 
 import {
@@ -459,7 +461,7 @@ export default function ReportManager({
         </aside>
       </div>
 
-      {templatePanel && <div className="modal-backdrop"><section className="report-template-modal" role="dialog" aria-modal="true" aria-labelledby="template-save-title"><div className="modal-title"><div><p className="section-kicker">Estructura reutilizable</p><h2 id="template-save-title">Guardar como plantilla</h2></div><button aria-label="Cerrar" onClick={() => setTemplatePanel(false)}><X size={18}/></button></div><p>La estructura, los textos y campos dinámicos quedarán disponibles para cualquier niño. Por privacidad, las gráficas y tablas clínicas seleccionadas no se guardan en la plantilla.</p><label><span>Nombre de la plantilla</span><input autoFocus value={templateForm.name} onChange={(event) => setTemplateForm({ ...templateForm, name: event.target.value })}/></label><label><span>Descripción</span><textarea value={templateForm.description} onChange={(event) => setTemplateForm({ ...templateForm, description: event.target.value })}/></label><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setTemplatePanel(false)}>Cancelar</button><button className="primary-formation-button" disabled={saving || !templateForm.name.trim()} onClick={saveTemplate}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar plantilla</button></div></section></div>}
+      {templatePanel && <ModalLayer onDismiss={() => setTemplatePanel(false)} className="modal-backdrop"><section className="report-template-modal" role="dialog" aria-modal="true" aria-labelledby="template-save-title"><div className="modal-title"><div><p className="section-kicker">Estructura reutilizable</p><h2 id="template-save-title">Guardar como plantilla</h2></div><button aria-label="Cerrar" onClick={() => setTemplatePanel(false)}><X size={18}/></button></div><p>La estructura, los textos y campos dinámicos quedarán disponibles para cualquier niño. Por privacidad, las gráficas y tablas clínicas seleccionadas no se guardan en la plantilla.</p><label><span>Nombre de la plantilla</span><input autoFocus value={templateForm.name} onChange={(event) => setTemplateForm({ ...templateForm, name: event.target.value })}/></label><label><span>Descripción</span><textarea value={templateForm.description} onChange={(event) => setTemplateForm({ ...templateForm, description: event.target.value })}/></label><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setTemplatePanel(false)}>Cancelar</button><button className="primary-formation-button" disabled={saving || !templateForm.name.trim()} onClick={saveTemplate}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar plantilla</button></div></section></ModalLayer>}
     </div>;
   }
 

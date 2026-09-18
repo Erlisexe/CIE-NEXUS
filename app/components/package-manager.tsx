@@ -1,5 +1,7 @@
 "use client";
 
+import ModalLayer from "./modal-layer";
+
 import {
   Archive,
   ArrowLeft,
@@ -264,6 +266,6 @@ export default function PackageManager({ packages, onPackagesChange, notify }: P
         </div>
       </article>)}
     </section>
-    {deleteTarget && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-package-title"><button className="modal-x" aria-label="Cerrar" onClick={() => setDeleteTarget(null)}><X size={18}/></button><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-package-title">Eliminar paquete permanentemente</h2><p>Se eliminará <strong>{deleteTarget.name}</strong> de la biblioteca. Las evaluaciones ya creadas conservarán su copia inmutable del instrumento.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={saving || deleteText.trim().toUpperCase() !== "ELIMINAR"} onClick={deletePackage}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></div>}
+    {deleteTarget && <ModalLayer onDismiss={() => setDeleteTarget(null)} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-package-title"><button className="modal-x" aria-label="Cerrar" onClick={() => setDeleteTarget(null)}><X size={18}/></button><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-package-title">Eliminar paquete permanentemente</h2><p>Se eliminará <strong>{deleteTarget.name}</strong> de la biblioteca. Las evaluaciones ya creadas conservarán su copia inmutable del instrumento.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={saving || deleteText.trim().toUpperCase() !== "ELIMINAR"} onClick={deletePackage}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></ModalLayer>}
   </>;
 }
