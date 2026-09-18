@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { apiAccountGuard, canAccessProfile, visibleProfileIds, type AppAccount } from "../../../lib/access-control";
+import { apiAccountGuard, canAccessProfile, visibleProfileIds } from "../../../lib/access-control";
 import { isActiveSite } from "../../../lib/sites";
 import { canRecordScheduledSession } from "../../../lib/resource-scope";
 import {
@@ -18,7 +18,6 @@ import {
 } from "../../../db/schema";
 import {
   normalizeCriteria,
-  normalizeCriterion,
   normalizeTargetState,
   normalizeTrials,
   replayClinicalProgram,
@@ -27,8 +26,6 @@ import {
   type ReplaySession,
   type ReplayTarget,
 } from "../../../lib/clinical-mastery";
-import { normalizeTrialDetails } from "../../../lib/trial-data";
-import { aggregateOnlySessionResult, canViewRawClinicalDetail } from "../../../lib/clinical-data-privacy";
 import {
   DEFAULT_SESSION_NOTE_TEMPLATE,
   formatSessionNoteText,
@@ -37,8 +34,9 @@ import {
   sanitizeSessionNoteFields,
   type SessionNoteTemplateSnapshot,
 } from "../../../lib/session-note-templates";
+import { normalizeSessionTargetConfig } from "../../../lib/mobile-collection";
 
-const MEASUREMENTS = new Set(["percentage", "frequency", "duration", "latency", "occurrence"]);
+const MEASUREMENTS = new Set(["percentage", "frequency", "duration", "latency", "occurrence", "discrete_trials", "partial_interval", "task_analysis"]);
 const GRAPH_TYPES = new Set(["line", "bar", "cumulative"]);
 const LINE_DESIGNS = new Set(["simple", "AB", "ABA", "ABAB", "BAB", "multiple-baseline", "multielement", "changing-criterion", "custom"]);
 type SessionResult = ClinicalSessionResult;
@@ -65,17 +63,18 @@ function sanitizeSessionResult(raw: Record<string, unknown>, target: typeof inte
   const rawCorrect = raw.correct === "" || raw.correct === null || raw.correct === undefined ? null : numberValue(raw.correct);
   const correct = trials.length ? trials.reduce<number>((sum, trial) => sum + trial, 0) : rawCorrect;
   let value = sampled && raw.value !== "" && raw.value !== null && raw.value !== undefined ? numberValue(raw.value) : null;
-  if ((target.measurement === "percentage" || target.measurement === "occurrence") && correct !== null && opportunities > 0) {
+  if (["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(target.measurement) && correct !== null && opportunities > 0) {
     value = Math.round((correct / opportunities) * 1000) / 10;
   }
-  const stateAtSession = normalizeTargetState(raw.stateAtSession ?? target.state);
-  const rawSnapshot = raw.criterionSnapshot && typeof raw.criterionSnapshot === "object"
-    ? raw.criterionSnapshot as Record<string, unknown>
-    : null;
-  const snapshotState = rawSnapshot ? normalizeTargetState(rawSnapshot.state) : null;
-  const criterionSnapshot = rawSnapshot && snapshotState !== "closed" && snapshotState === stateAtSession
-    ? { state: snapshotState, criterion: normalizeCriterion(rawSnapshot.criterion, snapshotState, target.measurement) }
-    : undefined;
+  const trialDetails = Array.isArray(raw.trialDetails) ? raw.trialDetails.flatMap((value) => {
+    const detail = value && typeof value === "object" ? value as Record<string, unknown> : null;
+    const responseCode = textValue(detail?.responseCode);
+    return detail && ["I", "G", "V", "M", "FP", "FT", "X"].includes(responseCode) ? [{ id: textValue(detail.id), at: textValue(detail.at), responseCode: responseCode as "I" | "G" | "V" | "M" | "FP" | "FT" | "X", ...(Number.isInteger(detail.taskStepIndex) ? { taskStepIndex: Number(detail.taskStepIndex), taskStep: textValue(detail.taskStep) } : {}), ...(detail.probe === true ? { probe: true } : {}) }] : [];
+  }) : [];
+  const observations = Array.isArray(raw.observations) ? raw.observations.flatMap((value) => {
+    const observation = value && typeof value === "object" ? value as Record<string, unknown> : null;
+    return observation && Number.isFinite(Number(observation.value)) ? [{ id: textValue(observation.id), at: textValue(observation.at), value: Number(observation.value), ...(["I", "G", "V", "M", "FP", "FT", "X"].includes(textValue(observation.responseCode)) ? { responseCode: textValue(observation.responseCode) as "I" | "G" | "V" | "M" | "FP" | "FT" | "X" } : {}) }] : [];
+  }) : [];
   return {
     targetId: textValue(raw.targetId),
     sampled,
@@ -83,14 +82,16 @@ function sanitizeSessionResult(raw: Record<string, unknown>, target: typeof inte
     correct,
     opportunities,
     trials,
-    ...(normalizeTrialDetails(raw.trialDetails, trials).length ? { trialDetails: normalizeTrialDetails(raw.trialDetails, trials) } : {}),
     note: textValue(raw.note),
-    stateAtSession,
-    ...(criterionSnapshot ? { criterionSnapshot } : {}),
+    stateAtSession: normalizeTargetState(raw.stateAtSession ?? target.state),
     criterionStatus: ["met", "not_met", "insufficient_sample", "not_evaluated"].includes(textValue(raw.criterionStatus))
       ? textValue(raw.criterionStatus) as SessionResult["criterionStatus"]
       : "not_evaluated",
     criterionReason: textValue(raw.criterionReason),
+    ...(trialDetails.length ? { trialDetails } : {}),
+    ...(observations.length ? { observations } : {}),
+    ...(Number.isFinite(Number(raw.frequencyObservationSeconds)) ? { frequencyObservationSeconds: Math.max(0, Math.round(Number(raw.frequencyObservationSeconds))) } : {}),
+    ...(Number.isFinite(Number(raw.ratePerMinute)) ? { ratePerMinute: Number(raw.ratePerMinute) } : {}),
   };
 }
 
@@ -114,6 +115,8 @@ function normalizeProgramGraphConfig(value: unknown, targets: Array<{ id: string
     graphType: GRAPH_TYPES.has(textValue(raw.graphType)) ? textValue(raw.graphType) : "line",
     designType: LINE_DESIGNS.has(textValue(raw.designType)) ? textValue(raw.designType) : "AB",
     primaryTargetId,
+    clinicalMetric: ["percentage", "count", "opportunities", "rate", "mastered"].includes(textValue(raw.clinicalMetric)) ? textValue(raw.clinicalMetric) : "percentage",
+    clinicalGrouping: ["session", "day", "week", "month"].includes(textValue(raw.clinicalGrouping)) ? textValue(raw.clinicalGrouping) : "session",
     showPoints: raw.showPoints !== false,
     showLegend: raw.showLegend !== false,
   };
@@ -121,23 +124,6 @@ function normalizeProgramGraphConfig(value: unknown, targets: Array<{ id: string
 
 function serializeMasteryEvent(event: typeof targetMasteryEvents.$inferSelect) {
   return { ...event, criterionSnapshot: parseJson(event.criterionSnapshot, {}) };
-}
-
-function serializeSessionForAccount(session: typeof interventionSessions.$inferSelect, account: AppAccount) {
-  const results = parseJson<Record<string, unknown>[]>(session.results, []);
-  const transitions = parseJson<Record<string, unknown>[]>(session.transitions, []);
-  const rawDetailAvailable = canViewRawClinicalDetail(account, session.professionalAccountId);
-  if (rawDetailAvailable) return { ...session, results, transitions, rawDetailAvailable: true };
-  return {
-    ...session,
-    clinicalSessionRunId: null,
-    context: "",
-    notes: "",
-    professionalAccountId: "team",
-    rawDetailAvailable: false,
-    results: results.map(aggregateOnlySessionResult),
-    transitions,
-  };
 }
 
 function serializeProgram(
@@ -155,6 +141,7 @@ function serializeProgram(
       ...target,
       state: normalizeTargetState(target.state),
       criteria: normalizeCriteria(target.criteria, target.measurement),
+      sessionConfig: normalizeSessionTargetConfig(target.sessionConfig),
     })),
     masteryEvents: masteryEvents
       .filter((event) => event.programId === program.id && event.status === "active")
@@ -332,7 +319,11 @@ export async function GET(request: Request) {
         if (!visibleProgramIds.has(session.programId)) return false;
         if (!mineOnly) return true;
         return session.professionalAccountId === account.id;
-      }).map((session) => serializeSessionForAccount(session, account)),
+      }).map((session) => ({
+        ...session,
+        results: parseJson(session.results, []),
+        transitions: parseJson(session.transitions, []),
+      })),
       // Global dashboard/program reads do not consume history and must not bind
       // thousands of target IDs. Scoped child/program reads preserve the data.
       history: history.filter((item) => visibleTargetIds.has(item.targetId)),
@@ -386,6 +377,7 @@ export async function POST(request: Request) {
         unitLabel: textValue(target.unitLabel) || "%",
         state: "baseline",
         criteria: JSON.stringify(normalizeCriteria(target.criteria, MEASUREMENTS.has(textValue(target.measurement)) ? textValue(target.measurement) : "percentage")),
+        sessionConfig: JSON.stringify(normalizeSessionTargetConfig(target.sessionConfig)),
         sortOrder: index,
       }));
       const targets = await db.insert(interventionTargets).values(targetRows).returning();
@@ -467,8 +459,6 @@ export async function POST(request: Request) {
         professionalAccountId: appointment?.professionalAccountId || account.id,
         sessionDate,
         context,
-        source: "web",
-        durationSeconds: Math.max(0, Math.round(numberValue(body.durationSeconds, 0))),
         noteTemplateId: storedTemplate?.id || null,
         noteTemplateSnapshot: JSON.stringify(snapshot),
         noteValues: JSON.stringify(noteValues),
@@ -593,6 +583,7 @@ export async function PUT(request: Request) {
       if (!account.permissions.includes("sessions.manage") && account.role !== "direccion_clinica") return Response.json({ error: "Tu rol no permite modificar sesiones." }, { status: 403 });
       const [current] = await db.select().from(interventionSessions).where(eq(interventionSessions.id, id)).limit(1);
       if (!current) return Response.json({ error: "No se encontró la sesión." }, { status: 404 });
+      if (current.clinicalSessionRunId) return Response.json({ error: "Una sesión cerrada y firmada no se modifica por partes. Su evidencia clínica permanece inmutable." }, { status: 409 });
       const [currentProgram] = await db.select().from(interventionPrograms).where(eq(interventionPrograms.id, current.programId)).limit(1);
       if (!currentProgram || !canAccessProfile(account, { id: currentProgram.profileId || "", site: currentProgram.site })) return Response.json({ error: "No tienes acceso a esta sesión." }, { status: 403 });
       const rawResults = Array.isArray(body.results) ? body.results as Record<string, unknown>[] : [];
@@ -708,6 +699,7 @@ export async function PUT(request: Request) {
         measurement,
         unitLabel: textValue(raw.unitLabel) || "%",
         criteria: JSON.stringify(normalizeCriteria(raw.criteria, measurement)),
+        sessionConfig: JSON.stringify(normalizeSessionTargetConfig(raw.sessionConfig)),
         sortOrder: index,
         updatedAt: new Date().toISOString(),
       };
@@ -762,6 +754,7 @@ export async function DELETE(request: Request) {
       if (!account.permissions.includes("sessions.manage") && account.role !== "direccion_clinica") return Response.json({ error: "Tu rol no permite eliminar sesiones." }, { status: 403 });
       const [session] = await db.select().from(interventionSessions).where(eq(interventionSessions.id, id)).limit(1);
       if (!session) return Response.json({ error: "No se encontró la sesión." }, { status: 404 });
+      if (session.clinicalSessionRunId) return Response.json({ error: "Una sesión cerrada y firmada no se puede eliminar. Su historial y evidencia clínica se conservan." }, { status: 409 });
       const [program] = await db.select().from(interventionPrograms).where(eq(interventionPrograms.id, session.programId)).limit(1);
       if (!program || !canAccessProfile(account, { id: program.profileId || "", site: program.site })) return Response.json({ error: "No tienes acceso a esta sesión." }, { status: 403 });
       const preview = await replayProgramFromRows(db, session.programId, { id, row: null });

@@ -13,12 +13,11 @@ import {
   trainingCycles,
 } from "../../../db/schema";
 import { apiAccountGuard, canAccessChild, hasPermission } from "../../../lib/access-control";
-import { aggregateOnlySessionResult, canViewRawClinicalDetail, redactAbcRecordForViewer } from "../../../lib/clinical-data-privacy";
 import { signedProfilePhotoMap } from "../../../lib/profile-photos";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
-function parsed<T>(value: string, fallback: T): T {
-  try { return JSON.parse(value || "") as T; } catch { return fallback; }
+function parsed(value: string, fallback: unknown) {
+  try { return JSON.parse(value || ""); } catch { return fallback; }
 }
 
 export async function GET(request: Request) {
@@ -61,7 +60,7 @@ export async function GET(request: Request) {
         ? db.select({ id: reports.id, title: reports.title, reportType: reports.reportType, status: reports.status, authorName: reports.authorName, finalizedAt: reports.finalizedAt, updatedAt: reports.updatedAt }).from(reports).where(eq(reports.profileId, profileId)).orderBy(desc(reports.updatedAt))
         : Promise.resolve([]),
       capabilities.abc
-        ? db.select({ id: abcRecords.id, targetId: abcRecords.targetId, recordedByAccountId: abcRecords.recordedByAccountId, eventDate: abcRecords.eventDate, eventTime: abcRecords.eventTime, antecedentLabel: abcRecords.antecedentLabel, behaviorLabel: abcRecords.behaviorLabel, consequenceLabel: abcRecords.consequenceLabel, recordedByName: abcRecords.recordedByName }).from(abcRecords).where(eq(abcRecords.profileId, profileId)).orderBy(desc(abcRecords.eventDate), desc(abcRecords.eventTime)).limit(6)
+        ? db.select({ id: abcRecords.id, eventDate: abcRecords.eventDate, eventTime: abcRecords.eventTime, antecedentLabel: abcRecords.antecedentLabel, behaviorLabel: abcRecords.behaviorLabel, consequenceLabel: abcRecords.consequenceLabel, recordedByName: abcRecords.recordedByName }).from(abcRecords).where(eq(abcRecords.profileId, profileId)).orderBy(desc(abcRecords.eventDate), desc(abcRecords.eventTime)).limit(6)
         : Promise.resolve([]),
     ]);
 
@@ -119,22 +118,14 @@ export async function GET(request: Request) {
           criteria: parsed(target.criteria, {}),
         })),
       })) : [],
-      sessions: sessionRows.map((session) => {
-        const rawDetailAvailable = canViewRawClinicalDetail(account, session.professionalAccountId);
-        const results = parsed<Record<string, unknown>[]>(session.results, []);
-        return {
-          ...session,
-          ...(rawDetailAvailable ? {} : { clinicalSessionRunId: null, context: "", notes: "", professionalAccountId: "team" }),
-          programName: programRows.find((program) => program.id === session.programId)?.name || "Programa",
-          professionalName: rawDetailAvailable
-            ? session.professionalAccountId ? professionalMap.get(session.professionalAccountId) || "Profesional no disponible" : "Sin profesional registrado"
-            : "Equipo clínico",
-          durationMinutes: (() => { const appointment = appointmentRows.find((item) => item.interventionSessionId === session.id); if (!appointment) return null; const [sh, sm] = appointment.startTime.split(":").map(Number); const [eh, em] = appointment.endTime.split(":").map(Number); return Math.max(0, eh * 60 + em - sh * 60 - sm); })(),
-          results: rawDetailAvailable ? results : results.map(aggregateOnlySessionResult),
-          transitions: parsed(session.transitions, []),
-          rawDetailAvailable,
-        };
-      }),
+      sessions: sessionRows.map((session) => ({
+        ...session,
+        programName: programRows.find((program) => program.id === session.programId)?.name || "Programa",
+        professionalName: session.professionalAccountId ? professionalMap.get(session.professionalAccountId) || "Profesional no disponible" : "Sin profesional registrado",
+        durationMinutes: (() => { const appointment = appointmentRows.find((item) => item.interventionSessionId === session.id); if (!appointment) return null; const [sh, sm] = appointment.startTime.split(":").map(Number); const [eh, em] = appointment.endTime.split(":").map(Number); return Math.max(0, eh * 60 + em - sh * 60 - sm); })(),
+        results: parsed(session.results, []),
+        transitions: parsed(session.transitions, []),
+      })),
       graphs: graphRows.map((graph) => ({
         id: graph.id,
         title: graph.title,
@@ -151,7 +142,7 @@ export async function GET(request: Request) {
         pointCount: Array.isArray(parsed(graph.points, [])) ? (parsed(graph.points, []) as unknown[]).length : 0,
       })),
       reports: reportRows,
-      abcRecords: abcRows.map((record) => redactAbcRecordForViewer(record, account)),
+      abcRecords: abcRows,
       documents: documentRows,
       capabilities,
     });

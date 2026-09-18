@@ -1,5 +1,7 @@
 "use client";
 
+import { clientRequest } from "../../lib/client-request";
+
 import {
   Activity,
   ArrowLeft,
@@ -152,6 +154,8 @@ export default function ChildProfileWorkspace({
 }) {
   const [data, setData] = useState<Dossier | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadRevision, setReloadRevision] = useState(0);
   const [section, setSection] = useState<SectionKey>("overview");
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -161,7 +165,7 @@ export default function ChildProfileWorkspace({
 
   const loadDossier = useCallback(async () => {
     try {
-      const response = await fetch(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store" });
+      const response = await clientRequest(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store" });
       const payload = await response.json() as Dossier & { error?: string };
       if (!response.ok) throw new Error(payload.error || "No se pudo cargar el expediente.");
       payload.profile.responsibles = profile.responsibles;
@@ -173,20 +177,23 @@ export default function ChildProfileWorkspace({
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store", signal: controller.signal })
+    // Never show the previous child's dossier while a new identity is loading.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true); setData(null); setLoadError("");
+    clientRequest(`/api/child-profile?profileId=${encodeURIComponent(profile.id)}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const payload = await response.json() as Dossier & { error?: string };
         if (!response.ok) throw new Error(payload.error || "No se pudo cargar el expediente.");
         payload.profile.responsibles = profile.responsibles;
         return payload;
       })
-      .then((payload) => setData(payload))
+      .then((payload) => { if (!controller.signal.aborted) setData(payload); })
       .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) notify(error instanceof Error ? error.message : "No se pudo cargar el expediente.");
+        if (!controller.signal.aborted) { const message = error instanceof Error ? error.message : "No se pudo cargar el expediente."; setLoadError(message); notify(message); }
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [notify, profile.id, profile.responsibles, profile.updatedAt]);
+  }, [notify, profile.id, profile.responsibles, profile.updatedAt, reloadRevision]);
 
   const child = data?.profile || profile;
   const age = ageFrom(child.dateOfBirth);
@@ -227,7 +234,7 @@ export default function ChildProfileWorkspace({
       form.set("profileId", profile.id);
       form.set("file", file);
       form.set("description", description);
-      const response = await fetch("/api/child-documents", { method: "POST", body: form });
+      const response = await clientRequest("/api/child-documents", { method: "POST", body: form });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error || "No se pudo subir el documento.");
       setFile(null);
@@ -244,7 +251,7 @@ export default function ChildProfileWorkspace({
   async function deleteDocument(document: Document) {
     if (!window.confirm(`¿Eliminar ${document.fileName} del expediente?`)) return;
     try {
-      const response = await fetch("/api/child-documents", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: document.id }) });
+      const response = await clientRequest("/api/child-documents", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: document.id }) });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error || "No se pudo eliminar el documento.");
       await loadDossier();
@@ -296,11 +303,11 @@ export default function ChildProfileWorkspace({
 
     if (section === "evaluations") return <section className="child-section-card"><header><div><p className="section-kicker">Historia evaluativa</p><h2>Evaluaciones</h2></div><button className="primary-formation-button" onClick={onOpenEvaluations}>Abrir módulo</button></header>{data.evaluations.length ? <div className="child-record-list">{data.evaluations.map((evaluation) => <article key={evaluation.id}><span className="record-symbol"><ClipboardList size={19}/></span><div><strong>{evaluation.programContext}</strong><p>{evaluation.cycleLabel} · {evaluation.instrumentVersion} · Ruta {evaluation.routeType}</p></div><span className={`child-status ${evaluation.archivedAt ? "archived" : ""}`}>{evaluation.archivedAt ? "Archivada" : statusLabel(evaluation.status)}</span><small>{formatDate(evaluation.updatedAt)}</small></article>)}</div> : <EmptySection title="Sin evaluaciones" text="Las evaluaciones vinculadas a este niño aparecerán aquí."/>}</section>;
 
-    if (section === "programs") return <section className="child-section-card"><header><div><p className="section-kicker">Intervención</p><h2>Programas</h2></div><button className="primary-formation-button" onClick={onOpenPrograms}>Gestionar programas</button></header>{data.programs.length ? <div className="child-program-list">{data.programs.map((program) => <article key={program.id}><div><span><BookOpenCheck size={19}/></span><div><strong>{program.name}</strong><p>{program.objective}</p></div></div><footer><span className="child-status">{statusLabel(program.status)}</span><small>{program.targets.length} objetivo{program.targets.length === 1 ? "" : "s"} específico{program.targets.length === 1 ? "" : "s"}</small><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : "Línea"} · {program.graphConfig?.designType || "AB"}</small><button className="child-inline-action" onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={15}/> Ver gráfica</button></footer></article>)}</div> : <EmptySection title="Sin programas" text="Crea o vincula un programa para comenzar el plan de intervención."/>}</section>;
+    if (section === "programs") return <section className="child-section-card"><header><div><p className="section-kicker">Intervención</p><h2>Programas</h2></div><button className="primary-formation-button" onClick={onOpenPrograms}>Gestionar programas</button></header>{data.programs.length ? <div className="child-program-list">{data.programs.map((program) => <article key={program.id}><div><span><BookOpenCheck size={19}/></span><div><strong>{program.name}</strong><p>{program.objective}</p></div></div><footer><span className="child-status">{statusLabel(program.status)}</span><small>{program.targets.length} objetivo{program.targets.length === 1 ? "" : "s"} específico{program.targets.length === 1 ? "" : "s"}</small><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : program.graphConfig?.graphType === "bar" ? "Barras" : "Línea"} · por programa</small><button className="child-inline-action" onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={15}/> Ver gráfica</button></footer></article>)}</div> : <EmptySection title="Sin programas" text="Crea o vincula un programa para comenzar el plan de intervención."/>}</section>;
 
     if (section === "sessions") return <section className="child-section-card"><header><div><p className="section-kicker">Historial clínico</p><h2>Sesiones finalizadas</h2></div><button className="primary-formation-button" onClick={onOpenSessions}>Ver historial completo</button></header>{data.sessions.length ? <div className="child-record-list">{data.sessions.map((session) => <article key={session.id}><span className="record-symbol"><CalendarDays size={19}/></span><div><strong>{session.programName}</strong><p>{session.professionalName || "Profesional no registrado"}{session.durationMinutes ? ` · ${session.durationMinutes} min` : ""}{session.context ? ` · ${session.context}` : ""}{session.notes ? ` · ${session.notes}` : ""}</p></div><span className="child-status">{statusLabel(session.status)}</span><small>{formatDate(session.sessionDate)}</small></article>)}</div> : <EmptySection title="Sin sesiones finalizadas" text="Las sesiones cerradas de este niño aparecerán aquí como historial clínico."/>}</section>;
 
-    if (section === "graphs") return <section className="child-section-card"><header><div><p className="section-kicker">Visualización clínica</p><h2>Gráficas</h2><p>Visualizaciones automáticas alimentadas por sesiones y gráficas manuales vinculadas al expediente.</p></div><button className="primary-formation-button" onClick={onOpenGraphs}>Abrir gráficas</button></header>{data.programs.length > 0 && <div className="program-graph-shortcuts">{data.programs.map((program) => <button key={program.id} onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={18}/><span><strong>{program.name}</strong><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : "Línea"} · {program.graphConfig?.designType || "AB"}</small></span><ChevronRight size={16}/></button>)}</div>}{data.graphs.length ? <div className="child-record-list">{data.graphs.map((graph) => <article key={graph.id}><span className="record-symbol"><BarChart3 size={19}/></span><div><strong>{graph.title}</strong><p>{graph.designType} · {graph.measurement} · {graph.pointCount} puntos{graph.programName ? ` · ${graph.programName}` : ""}</p></div><span className="child-status">{statusLabel(graph.status)}</span><small>{formatDate(graph.updatedAt)}</small></article>)}</div> : data.programs.length === 0 && <EmptySection title="Sin gráficas vinculadas" text="Las gráficas se mostrarán cuando el niño tenga programas o visualizaciones manuales vinculadas."/>}</section>;
+    if (section === "graphs") return <section className="child-section-card"><header><div><p className="section-kicker">Visualización clínica</p><h2>Gráficas por programa</h2><p>La portada de cada programa usa sus sesiones y eventos de dominio; los targets permanecen en una vista secundaria.</p></div><button className="primary-formation-button" onClick={onOpenGraphs}>Abrir gráficas</button></header>{data.programs.length > 0 && <div className="program-graph-shortcuts">{data.programs.map((program) => <button key={program.id} onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={18}/><span><strong>{program.name}</strong><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : program.graphConfig?.graphType === "bar" ? "Barras" : "Línea"} · programa completo</small></span><ChevronRight size={16}/></button>)}</div>}{data.capabilities.abc && <button className="child-inline-action" onClick={onOpenABC}><ListTree size={15}/> Abrir análisis ABC</button>}{data.graphs.length ? <div className="child-record-list">{data.graphs.map((graph) => <article key={graph.id}><span className="record-symbol"><BarChart3 size={19}/></span><div><strong>{graph.title}</strong><p>{graph.designType} · {graph.measurement} · {graph.pointCount} puntos{graph.programName ? ` · ${graph.programName}` : ""}</p></div><span className="child-status">{statusLabel(graph.status)}</span><small>{formatDate(graph.updatedAt)}</small></article>)}</div> : data.programs.length === 0 && <EmptySection title="Sin gráficas vinculadas" text="Las gráficas se mostrarán cuando el niño tenga programas o visualizaciones manuales vinculadas."/>}</section>;
 
     if (section === "abc") return <section className="child-section-card"><header><div><p className="section-kicker">Observación descriptiva</p><h2>Registro ABC</h2><p>Antecedente, conducta y consecuencia documentados sin inferir automáticamente la función conductual.</p></div><button className="primary-formation-button" onClick={onOpenABC}><Plus size={16}/> Registrar o analizar ABC</button></header>{data.abcRecords.length ? <div className="child-record-list">{data.abcRecords.map((record) => <article key={record.id}><span className="record-symbol"><ListTree size={19}/></span><div><strong>{record.behaviorLabel}</strong><p>{record.antecedentLabel} → {record.consequenceLabel} · {record.recordedByName}</p></div><span className="child-status">ABC</span><small>{formatDate(record.eventDate)} · {record.eventTime}</small></article>)}</div> : <EmptySection title="Sin registros ABC" text="Los episodios descriptivos registrados para este niño aparecerán aquí."/>}</section>;
 
@@ -314,6 +321,7 @@ export default function ChildProfileWorkspace({
     return <section className="child-section-card service-plan"><header><div><p className="section-kicker">Plan de servicio</p><h2>Programas y objetivos del niño</h2><p>Esta vista se alimenta automáticamente de los programas vinculados al expediente.</p></div><button className="primary-formation-button" onClick={onOpenPrograms}>Gestionar programas</button></header>{data.programs.length ? <div className="service-programs">{data.programs.map((program, index) => <article key={program.id}><header><span>{String(index + 1).padStart(2, "0")}</span><div><small>{statusLabel(program.status)}</small><h3>{program.name}</h3><p>{program.objective}</p></div></header>{program.instructions && <div className="service-instructions"><strong>Procedimiento</strong><p>{program.instructions}</p></div>}<div className="service-targets">{program.targets.length ? program.targets.map((target) => <div key={target.id}><span>{target.code}</span><div><strong>{target.name}</strong><p>{target.specificObjective}</p></div><em>{statusLabel(target.state)}</em></div>) : <p className="no-targets">Este programa todavía no tiene objetivos específicos.</p>}</div></article>)}</div> : <EmptySection title="Plan de servicio pendiente" text="Los programas del niño aparecerán aquí como su plan de servicio integrado."/>}</section>;
   }
 
+  if (loadError) return <div className="load-error" role="alert"><p>{loadError}</p><button onClick={() => setReloadRevision(current => current + 1)}>Reintentar carga</button><button onClick={onBack}>Volver a niños</button></div>;
   return <div className="child-dossier">
     <button className="back-button child-back" onClick={onBack}><ArrowLeft size={17}/> Volver al directorio de niños</button>
     <section className="child-identity-card"><ProfilePhoto name={child.fullName} src={child.photoUrl} avatarClassName="child-avatar" editable={canManage} uploading={photoUploading} onFile={changePhoto}/><div className="child-identity-copy"><p className="section-kicker">Expediente infantil</p><h1>{child.fullName}</h1><p><MapPin size={14}/> Sede {child.site}{child.internalCode ? ` · ${child.internalCode}` : ""}</p><div><span className={`child-status ${child.status === "archived" ? "archived" : ""}`}><CheckCircle2 size={13}/> {statusLabel(child.status)}</span>{age !== null && <span><CalendarDays size={13}/> {age} años</span>}{child.diagnosis && <span><Stethoscope size={13}/> {child.diagnosis}</span>}</div></div><div className="child-identity-actions"><small>Expediente centralizado</small>{canManage && <button className="secondary-formation-button" onClick={onEdit}><Edit3 size={15}/> Editar datos</button>}</div></section>

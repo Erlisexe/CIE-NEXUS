@@ -33,10 +33,15 @@ export type TargetCriteria = Record<CriterionStage, MasteryCriterion>;
 
 export type TrialValue = 0 | 1;
 
-export type TrialDetail = {
-  value: TrialValue;
-  at?: string;
-  promptLevel?: "independent" | "gesture" | "verbal" | "model" | "partial_physical" | "full_physical";
+export type TrialResponseCode = "I" | "G" | "V" | "M" | "FP" | "FT" | "X";
+
+export type ClinicalTrialDetail = {
+  id: string;
+  at: string;
+  responseCode: TrialResponseCode;
+  taskStepIndex?: number;
+  taskStep?: string;
+  probe?: boolean;
 };
 
 export type ClinicalSessionResult = {
@@ -46,15 +51,14 @@ export type ClinicalSessionResult = {
   correct: number | null;
   opportunities: number;
   trials: TrialValue[];
-  trialDetails?: TrialDetail[];
   note: string;
   stateAtSession: TargetState;
-  criterionSnapshot?: {
-    state: CriterionStage;
-    criterion: MasteryCriterion;
-  };
   criterionStatus: "met" | "not_met" | "insufficient_sample" | "not_evaluated";
   criterionReason: string;
+  trialDetails?: ClinicalTrialDetail[];
+  observations?: Array<{ id: string; at: string; value: number; responseCode?: TrialResponseCode }>;
+  frequencyObservationSeconds?: number;
+  ratePerMinute?: number | null;
 };
 
 export type ReplayTarget = {
@@ -119,7 +123,7 @@ export function normalizeTargetState(value: unknown): TargetState {
 }
 
 function defaultMetric(measurement: string): CriterionMetric {
-  return measurement === "percentage" || measurement === "occurrence" || measurement === "discrete_trials"
+  return measurement === "percentage" || measurement === "occurrence" || measurement === "discrete_trials" || measurement === "partial_interval" || measurement === "task_analysis"
     ? "percentage_correct"
     : "value";
 }
@@ -129,7 +133,7 @@ export function defaultCriterion(stage: CriterionStage, measurement = "percentag
     metric: defaultMetric(measurement),
     operator: "gte",
     threshold: stage === "baseline" ? 90 : 80,
-    minTrials: measurement === "percentage" || measurement === "occurrence" || measurement === "discrete_trials" ? 3 : 1,
+    minTrials: measurement === "percentage" || measurement === "occurrence" || measurement === "discrete_trials" || measurement === "partial_interval" || measurement === "task_analysis" ? 3 : 1,
     requiredSessions: stage === "baseline" ? 1 : stage === "generalization" || stage === "maintenance" ? 2 : 3,
     consecutive: true,
     distinctContexts: stage === "generalization" ? 2 : 1,
@@ -251,10 +255,7 @@ export function replayClinicalProgram(targets: ReplayTarget[], sessions: ReplayS
       if (!target || state === "closed") {
         return { ...result, criterionStatus: "not_evaluated" as const, criterionReason: state === "closed" ? "Target cerrado antes de esta sesión." : "Target no reconocido." };
       }
-      const storedCriterion = rawResult.criterionSnapshot;
-      const criterion = storedCriterion?.state === state
-        ? normalizeCriterion(storedCriterion.criterion, state as CriterionStage, target.measurement)
-        : target.criteria[state as CriterionStage];
+      const criterion = target.criteria[state as CriterionStage];
       if (!criterion) return { ...result, criterionStatus: "not_evaluated" as const, criterionReason: "El estado no tiene criterio evaluable." };
       const evaluation = evaluateResult(result, criterion);
       const evaluatedResult = { ...result, value: evaluation.value ?? result.value, criterionStatus: evaluation.status, criterionReason: evaluation.reason };
@@ -271,9 +272,9 @@ export function replayClinicalProgram(targets: ReplayTarget[], sessions: ReplayS
       let to: TargetState | null = null;
       let reason = "";
       if (state === "baseline" && stageEvidence.length >= criterion.requiredSessions) {
-        to = window.met ? "closed" : "acquisition";
+        to = window.met ? "generalization" : "acquisition";
         reason = window.met
-          ? `Línea base superada: ${criterion.requiredSessions} sesión(es) cumplieron el criterio; la habilidad ya estaba presente.`
+          ? `Línea base superada: ${criterion.requiredSessions} sesión(es) cumplieron el criterio; la habilidad ya estaba presente y pasa a Masterizado.`
           : "Línea base completada sin alcanzar el criterio; el target pasa a Adquisición.";
       } else if (state !== "baseline" && window.ready && window.met) {
         to = nextState(state);
@@ -283,7 +284,7 @@ export function replayClinicalProgram(targets: ReplayTarget[], sessions: ReplayS
       if (to && to !== state) {
         targetStates.set(target.id, to);
         transitions.push({ targetId: target.id, code: target.code, targetName: target.name, from: state, to, reason });
-        if ((state === "baseline" && to === "closed") || state === "acquisition") {
+        if ((state === "baseline" && to === "generalization") || state === "acquisition") {
           if (!masteryByTarget.has(target.id)) {
             masteryByTarget.set(target.id, {
               targetId: target.id,
@@ -313,13 +314,13 @@ export function buildCumulativeMasteryTimeline(
   const uniqueEvents = [...new Map([...events]
     .sort((a, b) => a.masteredAt.localeCompare(b.masteredAt) || a.targetId.localeCompare(b.targetId))
     .map((event) => [event.targetId, event])).values()];
-  const before = uniqueEvents.filter((event) => dateFrom && event.masteredAt < dateFrom);
-  const inRange = uniqueEvents.filter((event) => (!dateFrom || event.masteredAt >= dateFrom) && (!dateTo || event.masteredAt <= dateTo));
+  const before = uniqueEvents.filter((event) => dateFrom && event.masteredAt.slice(0, 10) < dateFrom);
+  const inRange = uniqueEvents.filter((event) => (!dateFrom || event.masteredAt.slice(0, 10) >= dateFrom) && (!dateTo || event.masteredAt.slice(0, 10) <= dateTo));
   const moments = sessions
     .filter((session) => (!dateFrom || session.sessionDate >= dateFrom) && (!dateTo || session.sessionDate <= dateTo))
     .map((session) => ({ id: session.id, date: session.sessionDate }));
   for (const event of inRange) {
-    if (!moments.some((moment) => moment.id === event.sessionId)) moments.push({ id: `mastery-${event.id}`, date: event.masteredAt });
+    if (!moments.some((moment) => moment.id === event.sessionId)) moments.push({ id: `mastery-${event.id}`, date: event.masteredAt.slice(0, 10) });
   }
   moments.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
   const counted = new Set(before.map((event) => event.targetId));

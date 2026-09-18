@@ -1,5 +1,7 @@
 "use client";
 
+import ModalLayer from "./modal-layer";
+
 import { Ban, CheckCircle2, Copy, Edit3, KeyRound, LoaderCircle, Plus, ShieldCheck, Trash2, UserRoundCheck, UsersRound, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { roleLabel, type AppRole } from "../../lib/access-control";
@@ -139,7 +141,7 @@ export default function AccountManager({ profiles, sites, currentRole, notify }:
         </article>)}
       </div> : <div className="intervention-empty"><ShieldCheck size={30}/><strong>Aún no hay cuentas adicionales</strong><p>Tu cuenta propietaria se mostrará después de activarla.</p></div>}
     </section>
-    {form && <div className="modal-backdrop"><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-modal-title">
+    {form && <ModalLayer onDismiss={() => setForm(null)} className="modal-backdrop"><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-modal-title">
       <div className="modal-title"><div><p className="section-kicker">{form.id ? "Editar autorización" : "Nueva autorización"}</p><h2 id="account-modal-title">{form.id ? "Actualizar cuenta" : "Crear cuenta de acceso"}</h2></div><button aria-label="Cerrar" onClick={() => setForm(null)}><X size={19}/></button></div>
       <div className="account-form-grid">
         <label><span>Nombre completo</span><input autoFocus value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })}/></label>
@@ -151,7 +153,7 @@ export default function AccountManager({ profiles, sites, currentRole, notify }:
       {form.role !== "direccion_clinica" && <fieldset className="account-scope-field profile-scope"><legend>Niños vinculados</legend><div>{activeProfiles.map((profile) => <label key={profile.id}><input type="checkbox" checked={form.assignedProfileIds.includes(profile.id)} onChange={(event) => setForm({ ...form, assignedProfileIds: event.target.checked ? [...form.assignedProfileIds, profile.id] : form.assignedProfileIds.filter((item) => item !== profile.id) })}/><span><strong>{profile.fullName}</strong><small>{profile.site}{profile.internalCode ? ` · ${profile.internalCode}` : ""}</small></span></label>)}</div></fieldset>}
       <div className="account-role-note"><ShieldCheck size={18}/><p>{form.role === "direccion_clinica" ? "Control institucional completo y configuración de permisos por rol." : form.role === "subdirector" ? "Acceso institucional según los permisos definidos y vinculación clínica con niños específicos." : form.role === "supervisor" ? "Acceso limitado a sus sedes y a los niños vinculados." : form.role === "coordinador" ? "Acceso limitado a los niños asignados y a los permisos configurados para Coordinación." : "Acceso limitado a los niños asignados y a los permisos configurados para Terapia."}</p></div>
       <div className="modal-actions"><button className="secondary-formation-button" onClick={() => setForm(null)}>Cancelar</button><button className="primary-formation-button" disabled={busy} onClick={save}>{busy ? <LoaderCircle className="spin" size={16}/> : <ShieldCheck size={16}/>} Guardar autorización</button></div>
-    </section></div>}
-    {deleteTarget && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true"><span className="danger-mark"><Trash2 size={23}/></span><h2>Revocar acceso</h2><p><strong>{deleteTarget.display_name}</strong> perderá acceso inmediatamente. Sus evaluaciones, programas, sesiones y gráficas se conservarán.</p><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={busy} onClick={remove}>Revocar cuenta</button></div></section></div>}
+    </section></ModalLayer>}
+    {deleteTarget && <ModalLayer onDismiss={() => setDeleteTarget(null)} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true"><span className="danger-mark"><Trash2 size={23}/></span><h2>Revocar acceso</h2><p><strong>{deleteTarget.display_name}</strong> perderá acceso inmediatamente. Sus evaluaciones, programas, sesiones y gráficas se conservarán.</p><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={busy} onClick={remove}>Revocar cuenta</button></div></section></ModalLayer>}
   </>;
 }

@@ -3,8 +3,8 @@ import { Pressable, StyleSheet, Text, View, type GestureResponderEvent } from "r
 import type { SignaturePoint } from "../../../lib/mobile-collection.ts";
 import { colors } from "../theme";
 
-export function SignaturePad({ strokes, onChange, onDrawing, readOnly = false }: {
-  strokes: SignaturePoint[][]; onChange?: (value: SignaturePoint[][]) => void; onDrawing?: (value: boolean) => void; readOnly?: boolean;
+export function SignaturePad({ strokes, onChange, onDrawing, readOnly = false, label = "Firma del profesional" }: {
+  strokes: SignaturePoint[][]; onChange?: (value: SignaturePoint[][]) => void; onDrawing?: (value: boolean) => void; readOnly?: boolean; label?: string;
 }) {
   const [width, setWidth] = useState(300);
   const current = useRef(strokes);
@@ -17,7 +17,7 @@ export function SignaturePad({ strokes, onChange, onDrawing, readOnly = false }:
   const change = (value: SignaturePoint[][]) => { current.current = value; onChange?.(value); };
   function finish() { tracing.current = false; onDrawing?.(false); }
   return <View style={styles.container}>
-    <View accessibilityLabel={readOnly ? "Firma registrada del profesional" : "Área para trazar la firma del profesional"}
+    <View accessibilityLabel={readOnly ? `${label} registrada` : `Área para trazar: ${label}`}
       onLayout={(e) => setWidth(e.nativeEvent.layout.width)} style={styles.pad}
       onStartShouldSetResponder={() => !readOnly} onMoveShouldSetResponder={() => !readOnly}
       onResponderTerminationRequest={() => false}
