@@ -56,6 +56,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PackageManager from "./package-manager";
 import GraphManager from "./graph-manager";
 import InterventionSessionManager from "./intervention-session-manager";
+import TodaySessionLauncher from "./today-session-launcher";
 import PersonnelProfileManager, { type LinkableAccount, type PersonnelProfile } from "./personnel-profile-manager";
 import FormationManager from "./formation-manager";
 import AccountManager from "./account-manager";
@@ -377,6 +378,8 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const [passwordSending, setPasswordSending] = useState(false);
   const [appointmentToOpen, setAppointmentToOpen] = useState<CalendarAppointment | null>(null);
   const [sessionHistoryOnly, setSessionHistoryOnly] = useState(false);
+  const [todaySession, setTodaySession] = useState<{ profileId: string; profileName: string; appointmentId?: string } | null>(null);
+  const [todaySessionRevision, setTodaySessionRevision] = useState(0);
   const [selectedGraphProgramId, setSelectedGraphProgramId] = useState<string | null>(null);
   const [abcQuickContext, setAbcQuickContext] = useState<{ profileId: string; profileName: string; programId?: string | null; sessionId?: string | null; appointmentId?: string | null } | null>(null);
   const consumeAppointment = useCallback(() => setAppointmentToOpen(null), []);
@@ -885,13 +888,11 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
       {(can("calendar.view") || can("calendar.manage")) && <CalendarManager
         compact
+        key={todaySessionRevision}
         profiles={profiles}
         notify={flash}
         onOpenSession={(appointment: CalendarAppointment) => {
-          chooseProfile(appointment.profileId);
-          setAppointmentToOpen(appointment);
-          setSessionHistoryOnly(false);
-          setActive("Sesiones");
+          if (canRecordSessions) setTodaySession({ profileId: appointment.profileId, profileName: appointment.profileName, appointmentId: appointment.id });
         }}
       />}
     </div>;
@@ -1063,7 +1064,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     : active === "Formación" ? <FormationManager notify={flash}/>
     : active === "Calendario" ? <CalendarManager profiles={profiles} notify={flash} onOpenSession={openScheduledSession}/>
     : active === "Reunión" ? <MeetingManager notify={flash}/>
-    : active === "Niños" ? <PersonnelProfileManager profiles={profiles} sites={activeSiteNames} linkableAccounts={linkableAccounts} canManage={canManageChildren} selectedProfileId={selectedProfileId} onSelect={chooseProfile} onProfilesChange={handleProfilesChange} onOpenPrograms={() => setActive("Programas")} onOpenEvaluations={() => setActive("Evaluaciones")} onOpenSessions={() => { setSessionHistoryOnly(true); setAppointmentToOpen(null); setActive("Sesiones"); }} onOpenGraphs={() => { setSelectedGraphProgramId(null); setActive("Gráficas"); }} onOpenProgramGraph={openProgramGraph} onOpenABC={openABC} onOpenReports={() => setActive("Informes")} notify={flash}/>
+    : active === "Niños" ? <PersonnelProfileManager onStartTodaySession={canRecordSessions ? (profileId) => { const profile = profiles.find((item) => item.id === profileId); if (profile?.status === "active") setTodaySession({ profileId, profileName: profile.fullName }); } : undefined} profiles={profiles} sites={activeSiteNames} linkableAccounts={linkableAccounts} canManage={canManageChildren} selectedProfileId={selectedProfileId} onSelect={chooseProfile} onProfilesChange={handleProfilesChange} onOpenPrograms={() => setActive("Programas")} onOpenEvaluations={() => setActive("Evaluaciones")} onOpenSessions={() => { setSessionHistoryOnly(true); setAppointmentToOpen(null); setActive("Sesiones"); }} onOpenGraphs={() => { setSelectedGraphProgramId(null); setActive("Gráficas"); }} onOpenProgramGraph={openProgramGraph} onOpenABC={openABC} onOpenReports={() => setActive("Informes")} notify={flash}/>
     : active === "Programas" ? <InterventionSessionManager mode="programs" cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} onOpenProgramGraph={openProgramGraph}/>
     : active === "Sesiones" ? <InterventionSessionManager mode="sessions" cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} canManageSessionNoteTemplates={account.role === "direccion_clinica"} initialAppointment={appointmentToOpen} onAppointmentConsumed={consumeAppointment} allowAdHocSessions={account.role !== "terapeuta"} historyOnly={sessionHistoryOnly} onRegisterABC={canRecordABC ? setAbcQuickContext : undefined}/>
     : active === "Gráficas" ? <GraphManager cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} initialProgramId={selectedGraphProgramId} notify={flash} canManage={canManageGraphs} onOpenABC={canUseABC && selectedProfileId !== "all" ? openABC : undefined}/>
@@ -1095,6 +1096,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
       {canViewChildren && <div className="topbar-profile-filters" aria-label="Contexto clínico"><Search size={16}/><label><span className="sr-only">Sede</span><select value={selectedSite} onChange={(event) => { const next = event.target.value; setSelectedSite(next); if (selectedProfile && next !== "Todas" && selectedProfile.site !== next) setSelectedProfileId("all"); setScreen(null); }}><option value="Todas">Todas las sedes</option>{activeSiteNames.map((site) => <option value={site} key={site}>{site}</option>)}</select></label><label><span className="sr-only">Niño</span><select value={selectorProfiles.some((profile) => profile.id === selectedProfileId) ? selectedProfileId : "all"} onChange={(event) => chooseProfile(event.target.value)}><option value="all">{selectedSite === "Todas" ? "Todos los niños" : `Todos · ${selectedSite}`}</option>{selectorProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName}</option>)}</select></label></div>}
       <div className="topbar-actions"><span className="topbar-date"><CalendarDays size={15}/>{new Date().toLocaleDateString("es-NI", { day: "2-digit", month: "short" })}</span>{selectedProfile && canRecordABC && <button className="topbar-abc" title={`Registrar ABC · ${selectedProfile.fullName}`} aria-label={`Registrar ABC para ${selectedProfile.fullName}`} onClick={() => setAbcQuickContext({ profileId: selectedProfile.id, profileName: selectedProfile.fullName })}><ListTree size={18}/><span>ABC</span></button>}{(can("calendar.view") || can("calendar.manage")) && <button title="Calendario" aria-label="Abrir calendario" onClick={() => { setActive("Calendario"); setScreen(null); }}><CalendarDays size={18}/></button>}<button title="CIE Nexus Formación" aria-label="Abrir CIE Nexus Formación" onClick={() => window.location.assign("/formacion")}><CircleHelp size={19}/></button><button className="topbar-avatar-button" title={account.displayName} aria-label={`Configuración de ${account.displayName}`} onClick={() => { setActive("Configuración"); setScreen(null); }}><ProfilePhoto name={account.displayName} src={accountPhotoUrl} avatarClassName="topbar-avatar"/></button></div>
     </header><main id="main-content" tabIndex={-1} className={`formation-content ${screen ? "work-mode" : ""}`}>{mainContent}</main></section>
+    {todaySession && canRecordSessions && <TodaySessionLauncher key={`${todaySession.profileId}:${todaySession.appointmentId || "today"}`} {...todaySession} notify={flash} onExit={() => setTodaySession(null)} onFinished={() => { setTodaySessionRevision((current) => current + 1); refreshProfiles().catch((error: Error) => flash(error.message)); }}/>}
     <ToastNotice message={message}/>
     {abcQuickContext && <ABCQuickCapture context={abcQuickContext} onClose={() => setAbcQuickContext(null)} notify={flash}/>}
     {newOpen && <ModalLayer onDismiss={() => { setNewOpen(false); setEditingId(null); }} className="modal-backdrop"><section className="new-cycle-modal" role="dialog" aria-modal="true" aria-labelledby="new-cycle-title">

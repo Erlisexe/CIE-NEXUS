@@ -1,5 +1,7 @@
 "use client";
 
+import { StartTodaySessionButton } from "./today-session-launcher";
+
 import ModalLayer from "./modal-layer";
 
 import {
@@ -87,6 +89,7 @@ export default function PersonnelProfileManager({
   onOpenPrograms,
   onOpenEvaluations,
   onOpenSessions,
+  onStartTodaySession,
   onOpenGraphs,
   onOpenProgramGraph,
   onOpenABC,
@@ -103,6 +106,7 @@ export default function PersonnelProfileManager({
   onOpenPrograms: () => void;
   onOpenEvaluations: () => void;
   onOpenSessions: () => void;
+  onStartTodaySession?: (profileId: string) => void;
   onOpenGraphs: () => void;
   onOpenProgramGraph: (programId: string) => void;
   onOpenABC: () => void;
@@ -207,7 +211,7 @@ export default function PersonnelProfileManager({
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) || null;
 
   return <>
-    {selectedProfile ? <ChildProfileWorkspace key={selectedProfile.id} profile={selectedProfile} canManage={canManage} onBack={() => onSelect("all")} onEdit={() => openEdit(selectedProfile)} onOpenEvaluations={onOpenEvaluations} onOpenPrograms={onOpenPrograms} onOpenSessions={onOpenSessions} onOpenGraphs={onOpenGraphs} onOpenProgramGraph={onOpenProgramGraph} onOpenABC={onOpenABC} onOpenReports={onOpenReports} onPhotoChange={(photoUrl) => onProfilesChange(profiles.map((item) => item.id === selectedProfile.id ? { ...item, photoUrl } : item))} notify={notify}/> : <>
+    {selectedProfile ? <ChildProfileWorkspace key={selectedProfile.id} profile={selectedProfile} canManage={canManage} onBack={() => onSelect("all")} onEdit={() => openEdit(selectedProfile)} onOpenEvaluations={onOpenEvaluations} onOpenPrograms={onOpenPrograms} onOpenSessions={onOpenSessions} onStartTodaySession={onStartTodaySession} onOpenGraphs={onOpenGraphs} onOpenProgramGraph={onOpenProgramGraph} onOpenABC={onOpenABC} onOpenReports={onOpenReports} onPhotoChange={(photoUrl) => onProfilesChange(profiles.map((item) => item.id === selectedProfile.id ? { ...item, photoUrl } : item))} notify={notify}/> : <>
     <div className="formation-heading">
       <div><p className="section-kicker">Directorio clínico</p><h1>Niños organizados por sede</h1><p>Cada niño reúne sus evaluaciones, programas y sesiones, con responsables clínicos claramente vinculados.</p></div>
       {canManage && <button className="primary-formation-button" onClick={() => setDraft(blankChild(site === "Todas" ? sites[0] || "León" : site))}><Plus size={17}/> Agregar niño</button>}
@@ -230,6 +234,7 @@ export default function PersonnelProfileManager({
         <div className="profile-counts"><div><strong>{profile.evaluationCount || 0}</strong><small>Evaluaciones</small></div><div><strong>{profile.programCount || 0}</strong><small>Programas</small></div><div><strong>{profile.sessionCount || 0}</strong><small>Sesiones</small></div></div>
         {(profile.responsibles || []).length > 0 && <div className="child-responsibles">{profile.responsibles?.map((responsible) => <span key={responsible.id}><strong>{roleLabel(responsible.role)}</strong>{responsible.displayName}</span>)}</div>}
         {profile.notes && <p className="profile-notes">{profile.notes}</p>}
+        {profile.status === "active" && onStartTodaySession && <StartTodaySessionButton className="primary-formation-button child-start-session" onClick={() => onStartTodaySession(profile.id)}/>}
         <footer>{profile.status === "active" ? <><button className="profile-open" onClick={() => onSelect(profile.id)}><FolderOpen size={15}/> Abrir expediente</button>{canManage && <button title="Archivar niño" aria-label={`Archivar a ${profile.fullName}`} onClick={() => changeStatus(profile, "archive")}><Archive size={15}/></button>}</> : canManage ? <button className="profile-open" onClick={() => changeStatus(profile, "restore")}><RotateCcw size={15}/> Restaurar</button> : null}{canManage && <button className="danger-action" title="Eliminar niño" aria-label={`Eliminar a ${profile.fullName}`} onClick={() => { setDeleteTarget(profile); setDeleteText(""); }}><Trash2 size={15}/></button>}</footer>
       </article>)}</div></section>;
     })}</div> : <div className="intervention-empty"><CircleDashed size={30}/><strong>{showArchived ? "No hay niños archivados" : "Aún no hay niños en esta vista"}</strong><p>{canManage ? "Agrega el primer niño para vincularle evaluaciones, programas y sesiones." : "No hay niños disponibles dentro de tu alcance actual."}</p>{canManage && <button className="primary-formation-button" onClick={() => setDraft(blankChild(site === "Todas" ? sites[0] || "León" : site))}><Plus size={16}/> Agregar primer niño</button>}</div>}

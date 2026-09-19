@@ -1,6 +1,7 @@
 "use client";
 
 import { clientRequest } from "../../lib/client-request";
+import { StartTodaySessionButton } from "./today-session-launcher";
 
 import {
   Activity,
@@ -131,6 +132,7 @@ export default function ChildProfileWorkspace({
   onOpenEvaluations,
   onOpenPrograms,
   onOpenSessions,
+  onStartTodaySession,
   onOpenGraphs,
   onOpenProgramGraph,
   onOpenABC,
@@ -145,6 +147,7 @@ export default function ChildProfileWorkspace({
   onOpenEvaluations: () => void;
   onOpenPrograms: () => void;
   onOpenSessions: () => void;
+  onStartTodaySession?: (profileId: string) => void;
   onOpenGraphs: () => void;
   onOpenProgramGraph: (programId: string) => void;
   onOpenABC: () => void;
@@ -305,7 +308,7 @@ export default function ChildProfileWorkspace({
 
     if (section === "programs") return <section className="child-section-card"><header><div><p className="section-kicker">Intervención</p><h2>Programas</h2></div><button className="primary-formation-button" onClick={onOpenPrograms}>Gestionar programas</button></header>{data.programs.length ? <div className="child-program-list">{data.programs.map((program) => <article key={program.id}><div><span><BookOpenCheck size={19}/></span><div><strong>{program.name}</strong><p>{program.objective}</p></div></div><footer><span className="child-status">{statusLabel(program.status)}</span><small>{program.targets.length} objetivo{program.targets.length === 1 ? "" : "s"} específico{program.targets.length === 1 ? "" : "s"}</small><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : program.graphConfig?.graphType === "bar" ? "Barras" : "Línea"} · por programa</small><button className="child-inline-action" onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={15}/> Ver gráfica</button></footer></article>)}</div> : <EmptySection title="Sin programas" text="Crea o vincula un programa para comenzar el plan de intervención."/>}</section>;
 
-    if (section === "sessions") return <section className="child-section-card"><header><div><p className="section-kicker">Historial clínico</p><h2>Sesiones finalizadas</h2></div><button className="primary-formation-button" onClick={onOpenSessions}>Ver historial completo</button></header>{data.sessions.length ? <div className="child-record-list">{data.sessions.map((session) => <article key={session.id}><span className="record-symbol"><CalendarDays size={19}/></span><div><strong>{session.programName}</strong><p>{session.professionalName || "Profesional no registrado"}{session.durationMinutes ? ` · ${session.durationMinutes} min` : ""}{session.context ? ` · ${session.context}` : ""}{session.notes ? ` · ${session.notes}` : ""}</p></div><span className="child-status">{statusLabel(session.status)}</span><small>{formatDate(session.sessionDate)}</small></article>)}</div> : <EmptySection title="Sin sesiones finalizadas" text="Las sesiones cerradas de este niño aparecerán aquí como historial clínico."/>}</section>;
+    if (section === "sessions") return <section className="child-section-card"><header><div><p className="section-kicker">Atención e historial</p><h2>Sesiones</h2></div><div className="child-session-actions">{profile.status === "active" && onStartTodaySession && <StartTodaySessionButton onClick={() => onStartTodaySession(profile.id)}/>}<button className="secondary-formation-button" onClick={onOpenSessions}>Ver historial completo</button></div></header>{data.sessions.length ? <div className="child-record-list">{data.sessions.map((session) => <article key={session.id}><span className="record-symbol"><CalendarDays size={19}/></span><div><strong>{session.programName}</strong><p>{session.professionalName || "Profesional no registrado"}{session.durationMinutes ? ` · ${session.durationMinutes} min` : ""}{session.context ? ` · ${session.context}` : ""}{session.notes ? ` · ${session.notes}` : ""}</p></div><span className="child-status">{statusLabel(session.status)}</span><small>{formatDate(session.sessionDate)}</small></article>)}</div> : <EmptySection title="Sin sesiones finalizadas" text="Las sesiones cerradas de este niño aparecerán aquí como historial clínico."/>}</section>;
 
     if (section === "graphs") return <section className="child-section-card"><header><div><p className="section-kicker">Visualización clínica</p><h2>Gráficas por programa</h2><p>La portada de cada programa usa sus sesiones y eventos de dominio; los targets permanecen en una vista secundaria.</p></div><button className="primary-formation-button" onClick={onOpenGraphs}>Abrir gráficas</button></header>{data.programs.length > 0 && <div className="program-graph-shortcuts">{data.programs.map((program) => <button key={program.id} onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={18}/><span><strong>{program.name}</strong><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : program.graphConfig?.graphType === "bar" ? "Barras" : "Línea"} · programa completo</small></span><ChevronRight size={16}/></button>)}</div>}{data.capabilities.abc && <button className="child-inline-action" onClick={onOpenABC}><ListTree size={15}/> Abrir análisis ABC</button>}{data.graphs.length ? <div className="child-record-list">{data.graphs.map((graph) => <article key={graph.id}><span className="record-symbol"><BarChart3 size={19}/></span><div><strong>{graph.title}</strong><p>{graph.designType} · {graph.measurement} · {graph.pointCount} puntos{graph.programName ? ` · ${graph.programName}` : ""}</p></div><span className="child-status">{statusLabel(graph.status)}</span><small>{formatDate(graph.updatedAt)}</small></article>)}</div> : data.programs.length === 0 && <EmptySection title="Sin gráficas vinculadas" text="Las gráficas se mostrarán cuando el niño tenga programas o visualizaciones manuales vinculadas."/>}</section>;
 

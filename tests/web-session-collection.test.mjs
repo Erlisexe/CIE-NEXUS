@@ -15,6 +15,7 @@ import { syncWebCollection } from '../lib/mobile-collection-server.ts';
 import {
   discardWebCollectionDraft,
   prepareWebCollection,
+  prepareTodayWebCollection,
   saveWebCollectionDraft,
   startWebCollection,
   webDraftHasData,
@@ -166,4 +167,68 @@ test('la interfaz real conserva los controles clínicos solicitados y no usa la 
   assert.match(source, /acquisitionCount > 5/);
   assert.match(source, /beforeunload/);
   assert.doesNotMatch(source, /Mateo R\./);
+});
+
+
+test('el acceso desde el niño encuentra la cita propia de hoy sin permiso de calendario', async () => {
+  const f = fixture();
+  const result = await prepareTodayWebCollection(f.db, actor, 'child-web');
+  assert.equal(result.preparation.appointment.id, 'appointment-web');
+  assert.equal(result.draft, null);
+  assert.equal(f.sql.prepare('SELECT count(*) AS n FROM clinical_session_runs').get().n, 0);
+  f.sql.close();
+});
+
+test('el acceso de hoy excluye otras fechas, profesionales, canceladas, completadas y niños archivados', async () => {
+  for (const change of [
+    "UPDATE session_appointments SET session_date='2000-01-01'",
+    "UPDATE session_appointments SET session_date='2099-01-01'",
+    "UPDATE session_appointments SET professional_account_id='other-professional'",
+    "UPDATE session_appointments SET status='cancelled'",
+    "UPDATE session_appointments SET status='completed'",
+    "UPDATE personnel_profiles SET status='archived'",
+  ]) {
+    const f = fixture(); f.sql.exec(change);
+    await assert.rejects(prepareTodayWebCollection(f.db, actor, 'child-web'), (error) => error.code === 'appointment_required_today');
+    await assert.rejects(prepareTodayWebCollection(f.db, actor, 'child-web', 'appointment-web'), (error) => error.code === 'appointment_unavailable_today');
+    f.sql.close();
+  }
+});
+
+test('dos citas del mismo día exigen elegir y la selección se vuelve a validar', async () => {
+  const f = fixture();
+  f.sql.prepare('INSERT INTO session_appointments(id,profile_id,professional_account_id,site,session_date,start_time,end_time,created_by_account_id) VALUES (?,?,?,?,?,?,?,?)').run('appointment-second', 'child-web', actor.id, 'León', today, '11:00', '12:00', actor.id);
+  const choice = await prepareTodayWebCollection(f.db, actor, 'child-web');
+  assert.equal(choice.preparation, null);
+  assert.deepEqual(choice.appointments.map((item) => item.id), ['appointment-web', 'appointment-second']);
+  const chosen = await prepareTodayWebCollection(f.db, actor, 'child-web', 'appointment-second');
+  assert.equal(chosen.preparation.appointment.id, 'appointment-second');
+  f.sql.exec("UPDATE session_appointments SET status='cancelled' WHERE id='appointment-second'");
+  await assert.rejects(prepareTodayWebCollection(f.db, actor, 'child-web', 'appointment-second'), (error) => error.code === 'appointment_unavailable_today');
+  f.sql.close();
+});
+
+test('entrar desde el niño retoma el mismo borrador web y conserva los ensayos', async () => {
+  const f = fixture();
+  const { draft } = await start(f);
+  const target = draft.preparation.programs[0].targets[0];
+  draft.captures[target.id] = { targetId: target.id, definition: targetDefinition(target), note: '', opportunities: 1, timerStartedAt: null, observations: [{ id: randomUUID(), at: new Date().toISOString(), value: 1, responseCode: 'I' }] };
+  await saveWebCollectionDraft(f.db, actor, draft);
+  const resumed = await prepareTodayWebCollection(f.db, actor, 'child-web');
+  assert.equal(resumed.draft.id, draft.id);
+  assert.equal(resumed.draft.captures[target.id].observations.length, 1);
+  assert.equal(f.sql.prepare('SELECT count(*) AS n FROM clinical_session_runs').get().n, 1);
+  f.sql.close();
+});
+
+test('el acceso directo mantiene permisos y alcance de las sesiones sin cita', async () => {
+  const f = fixture();
+  await assert.rejects(prepareTodayWebCollection(f.db, { ...actor, permissions: ['sessions.view'] }, 'child-web'), (error) => error.code === 'permission_denied');
+  f.sql.exec('DELETE FROM session_appointments');
+  const coordinator = { ...actor, role: 'coordinador' };
+  const ready = await prepareTodayWebCollection(f.db, coordinator, 'child-web');
+  assert.equal(ready.preparation.appointment, null);
+  await assert.rejects(prepareTodayWebCollection(f.db, { ...coordinator, assignedProfileIds: [] }, 'child-web'), (error) => error.code === 'profile_out_of_scope');
+  assert.equal(f.sql.prepare('SELECT count(*) AS n FROM session_appointments').get().n, 0);
+  f.sql.close();
 });

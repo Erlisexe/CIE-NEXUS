@@ -27,3 +27,16 @@ Verificaciones del proyecto: TypeScript sin emisión, ESLint, build de Worker y 
 ## Límites de esta revisión
 
 La revisión no equivale a una certificación WCAG. No se ejecutó un recorrido autenticado de cada rol con cuentas reales ni se probó hardware físico o lectores de pantalla. No se modificaron el backend clínico, el esquema D1, los datos, las transiciones de fase ni el APK. Las pruebas de red y cierre del navegador usan respuestas simuladas; las pruebas de persistencia usan SQLite en memoria.
+
+
+## Acceso a la sesión desde el niño — continuación sobre Site v48
+
+- Se añadieron «Iniciar sesión de hoy» en las tarjetas activas del directorio, la pestaña Sesiones del expediente y Próximas terapias del inicio. El calendario principal mantiene su gestión administrativa.
+- Los accesos abren directamente la preparación y la toma reales. No cargan antes el catálogo general de programas, las plantillas y el calendario: la preparación resuelve todo en su API existente.
+- El servidor usa la fecha de Nicaragua, la cita del profesional y el niño activo. Si hay varias citas, exige elegir y valida de nuevo. Canceladas, completadas, citas de otra fecha o de otro profesional no se ofrecen. Sin cita, el terapeuta recibe un mensaje; otros roles conservan exactamente el alcance previo para sesiones sin cita.
+- Un borrador web se recupera con su mismo identificador y datos. El inicio evita el doble toque; cerrar la preparación devuelve el foco al acceso usado. Al terminar la toma, se refrescan el expediente y las citas del inicio.
+- Botones táctiles de al menos 44 px y texto de 14 px; en teléfono las acciones del expediente se apilan. Las citas futuras muestran disponibilidad, sin un botón de inicio inmediato.
+
+Validación de este bloque: 102/102 pruebas de proyecto, TypeScript, lint y build de Worker. Las cinco pruebas nuevas en `tests/web-session-collection.test.mjs` cubren resolución de cita, exclusiones, selección múltiple, reanudación con ensayos y permisos/alcance. No hay cambios de esquema ni migraciones.
+
+Prueba visual reproducible: `node tests/ui/build-entry-harness.mjs` prepara `tests/ui/entry.html` y `entry-mobile.html` para el preview de desarrollo. Renderiza los componentes reales con datos y respuestas sintéticos; el adaptador de prueba incluye únicamente la función real de etiquetas de roles, sin cargar autenticación del servidor. El bundle generado se ignora y no se publica. Se comprobó cada acceso, elección de segunda cita, reanudación sin POST de inicio, doble toque con un solo POST, ausencia de cita, fallo de carga/reintento, consulta sin botón de registro, Escape/restauración de foco, preparación/toma y regreso al expediente a 390 × 844. No es una prueba autenticada con cuentas reales ni con hardware físico.

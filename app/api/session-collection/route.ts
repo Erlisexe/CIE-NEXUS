@@ -2,7 +2,7 @@ import { getRawDb } from "../../../db";
 import { apiAccountGuard } from "../../../lib/access-control";
 import { CollectionError } from "../../../lib/mobile-collection";
 import { syncWebCollection } from "../../../lib/mobile-collection-server";
-import { discardWebCollectionDraft, prepareWebCollection, saveWebCollectionDraft, startWebCollection } from "../../../lib/web-session-collection-server";
+import { discardWebCollectionDraft, prepareTodayWebCollection, prepareWebCollection, saveWebCollectionDraft, startWebCollection } from "../../../lib/web-session-collection-server";
 
 function errorResponse(error: unknown) {
   if (error instanceof CollectionError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
@@ -23,7 +23,8 @@ export async function GET(request: Request) {
   if (denied || !account) return denied;
   try {
     const params = new URL(request.url).searchParams;
-    return Response.json(await prepareWebCollection(await getRawDb(), account, params.get("profileId")?.trim() || "", params.get("appointmentId")?.trim() || null));
+    const prepare = params.get("today") === "1" ? prepareTodayWebCollection : prepareWebCollection;
+    return Response.json(await prepare(await getRawDb(), account, params.get("profileId")?.trim() || "", params.get("appointmentId")?.trim() || null));
   } catch (error) { return errorResponse(error); }
 }
 

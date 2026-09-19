@@ -43,3 +43,6 @@ next-env.d.ts
 /mobile/android/
 /mobile/node_modules/
 /mobile/.expo/
+
+# Generated browser test fixtures
+/tests/ui/generated/

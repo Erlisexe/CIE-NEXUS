@@ -512,3 +512,18 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .clinical-graph-view-switch{display:flex;flex-wrap:wrap;gap:8px;margin:12px 20px 0}.clinical-graph-view-switch button{min-height:42px;display:inline-flex;align-items:center;gap:7px;padding:0 16px;border:1px solid #d8e4ec;border-radius:10px;background:#fff;color:#496779;font-size:11px;font-weight:800;cursor:pointer;touch-action:manipulation}.clinical-graph-view-switch button.active{border-color:#0080D8;background:#e8f4fc;color:#006da9}.clinical-graph-view-switch button:last-child:not(.active){margin-left:auto}
 .abc-cross-analysis{margin:12px 0;padding:17px}.abc-cross-analysis h2{margin:3px 0;font-size:16px}.abc-cross-analysis header p:last-child{margin:4px 0 0;color:#6a7e8b;font-size:10px}.abc-matrix-scroll{max-width:100%;overflow-x:auto;margin-top:15px}.abc-matrix{width:100%;min-width:520px;border-collapse:separate;border-spacing:3px;font-size:10px}.abc-matrix th,.abc-matrix td{padding:9px;border-radius:6px;text-align:center}.abc-matrix th:first-child{text-align:left}.abc-matrix th{max-width:160px;color:#365165;overflow-wrap:anywhere}.abc-matrix td{font-weight:800}.abc-pair-list{display:grid;gap:5px;margin-top:16px}.abc-pair-list>strong{font-size:11px}.abc-pair-list article{display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid #e2ebf0;border-radius:8px;font-size:10px}.abc-pair-list article>strong{color:#0080D8}
 @media(max-width:600px){.clinical-graph-view-switch button:last-child:not(.active){margin-left:0}.clinical-graph-view-switch button{flex:1;justify-content:center}.abc-cross-analysis{padding:12px}}
+
+/* Direct entry uses the same preparation and full-screen collector. */
+.child-start-session{width:100%;justify-content:center;margin-top:14px;min-height:44px}
+.start-today-session,.appointment-actions .start-today-session{min-height:44px;font-size:.875rem;line-height:1.4;gap:8px}
+.child-session-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.child-session-actions>button{min-height:44px;font-size:.875rem}
+.today-session-choice{max-width:580px}
+.today-appointment-list{padding:20px;display:grid;gap:12px;overflow-y:auto}
+.today-appointment-list>button{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px;text-align:left;border:1px solid #cadde8;border-radius:12px;background:#f5faff;color:#1d3c50;min-height:64px}
+.today-appointment-list>button:hover{border-color:#0080D8;background:#edf7ff}
+.today-appointment-list strong,.today-appointment-list small{display:block}
+.today-appointment-list small{font-size:.875rem;margin-top:4px}
+.today-appointment-list>button>span:last-child{font-size:.875rem;font-weight:700;color:#0063a8}
+.session-entry-hint{font-size:.875rem;color:#526778}
+@media(max-width:560px){.child-session-actions{width:100%;flex-direction:column;align-items:stretch}.today-appointment-list{padding:14px}}

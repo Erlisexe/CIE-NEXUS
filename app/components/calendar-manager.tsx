@@ -1,6 +1,8 @@
 "use client";
 
 import { clientRequest } from "../../lib/client-request";
+import { collectionDateTime } from "../../lib/mobile-collection";
+import { StartTodaySessionButton } from "./today-session-launcher";
 
 import ModalLayer from "./modal-layer";
 
@@ -142,7 +144,7 @@ export default function CalendarManager({
 
   const activeProfiles = profiles.filter((profile) => profile.status === "active");
   const eligibleProfessionals = draft ? professionals.filter((professional) => professional.eligibleProfileIds.includes(draft.profileId)) : professionals;
-  const today = iso(new Date());
+  const today = collectionDateTime(new Date()).date;
   const upcoming = loading || loadError ? [] : appointments.filter((appointment) => appointment.status !== "cancelled" && appointment.sessionDate >= today).slice(0, compact ? 5 : 8);
 
   function openNew(date = today) {
@@ -262,7 +264,7 @@ export default function CalendarManager({
         })}
       </div>}
     </section>
-    <section className="formation-panel upcoming-sessions-panel"><header><div><p className="section-kicker">Trabajo inmediato</p><h2>Próximas terapias</h2></div><span>{upcoming.length}</span></header>{upcoming.length ? <div>{upcoming.map((appointment) => <article key={appointment.id}><time><strong>{localDate(appointment.sessionDate).toLocaleDateString("es-NI", { weekday: "short", day: "2-digit", month: "short" })}</strong><span>{appointment.startTime}–{appointment.endTime}</span></time><div><strong>{appointment.profileName}</strong><small><UserRound size={13}/>{appointment.professionalName}{appointment.professionalRole ? ` · ${roleLabel(appointment.professionalRole)}` : ""} · <MapPin size={13}/>{appointment.site}</small></div><span className={`appointment-status ${appointment.status}`}>{statusLabel(appointment.status)}</span><div className="appointment-actions"><button className="session-enter" disabled={!appointment.canStart || appointment.status === "completed"} onClick={() => onOpenSession(appointment)}><Play size={14}/>{appointment.status === "completed" ? "Completada" : appointment.canStart ? "Iniciar terapia" : "Asignada a otro profesional"}</button>{canManage && !compact && <button className="manage-appointment" onClick={() => openManagement(appointment)}><Edit3 size={14}/>Gestionar</button>}</div></article>)}</div> : <div className="calendar-empty"><CalendarDays size={25}/><strong>No hay terapias próximas en este alcance.</strong><p>{canManage && !compact ? "Programa una sesión o navega a otra fecha para gestionar la agenda." : "Las nuevas asignaciones aparecerán aquí automáticamente."}</p></div>}</section>
+    <section className="formation-panel upcoming-sessions-panel"><header><div><p className="section-kicker">Trabajo inmediato</p><h2>Próximas terapias</h2></div><span>{upcoming.length}</span></header>{upcoming.length ? <div>{upcoming.map((appointment) => <article key={appointment.id}><time><strong>{localDate(appointment.sessionDate).toLocaleDateString("es-NI", { weekday: "short", day: "2-digit", month: "short" })}</strong><span>{appointment.startTime}–{appointment.endTime}</span></time><div><strong>{appointment.profileName}</strong><small><UserRound size={13}/>{appointment.professionalName}{appointment.professionalRole ? ` · ${roleLabel(appointment.professionalRole)}` : ""} · <MapPin size={13}/>{appointment.site}</small></div><span className={`appointment-status ${appointment.status}`}>{statusLabel(appointment.status)}</span><div className="appointment-actions">{compact ? (appointment.canStart && appointment.sessionDate === today && (appointment.status === "scheduled" || appointment.status === "in_progress") ? <StartTodaySessionButton className="session-enter" continuing={appointment.status === "in_progress"} onClick={() => onOpenSession(appointment)}/> : <span className="session-entry-hint">{appointment.status === "completed" ? "Completada" : appointment.sessionDate !== today ? "Disponible el día de la cita" : "No disponible para tu cuenta"}</span>) : <button className="session-enter" disabled={!appointment.canStart || appointment.status === "completed"} onClick={() => onOpenSession(appointment)}><Play size={14}/>{appointment.status === "completed" ? "Completada" : appointment.canStart ? "Iniciar terapia" : "Asignada a otro profesional"}</button>}{canManage && !compact && <button className="manage-appointment" onClick={() => openManagement(appointment)}><Edit3 size={14}/>Gestionar</button>}</div></article>)}</div> : <div className="calendar-empty"><CalendarDays size={25}/><strong>No hay terapias próximas en este alcance.</strong><p>{canManage && !compact ? "Programa una sesión o navega a otra fecha para gestionar la agenda." : "Las nuevas asignaciones aparecerán aquí automáticamente."}</p></div>}</section>
 
     {selectedAppointment && !compact && <ModalLayer onDismiss={() => setSelectedAppointment(null)} className="modal-backdrop"><section className="calendar-modal appointment-management-modal" role="dialog" aria-modal="true" aria-labelledby="calendar-manage-title"><div className="modal-title"><div><p className="section-kicker">Gestión directa</p><h2 id="calendar-manage-title">Gestionar sesión</h2></div><button aria-label="Cerrar" onClick={() => setSelectedAppointment(null)}><X size={19}/></button></div>
       <div className="calendar-form-grid appointment-readonly-grid">

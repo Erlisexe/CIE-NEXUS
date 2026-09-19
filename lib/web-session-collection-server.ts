@@ -10,6 +10,7 @@ import {
   type SessionClosing,
 } from "./mobile-collection.ts";
 import { prepareMobileCollection, type CollectionActor, type CollectionDatabase } from "./mobile-collection-server.ts";
+import { deriveMobileCapabilities } from "./mobile-api-contract.ts";
 
 type Row = Record<string, unknown>;
 type StartInput = {
@@ -113,6 +114,31 @@ export async function prepareWebCollection(db: CollectionDatabase, actor: Collec
   const draft = await loadWebCollectionDraft(db, actor, profileId, appointmentId);
   if (draft) return { preparation: draft.preparation, draft };
   return { preparation: await prepareMobileCollection(db, actor, profileId, appointmentId), draft: null };
+}
+
+export type TodayCollectionAppointment = { id: string; startTime: string; endTime: string; sessionType: string; inProgress: boolean };
+
+// Resolve today's entry using the same appointments and drafts as the calendar.
+// A choice never creates a second appointment or adopts another professional's work.
+export async function prepareTodayWebCollection(db: CollectionDatabase, actor: CollectionActor, profileId: string, appointmentId: string | null = null) {
+  if (!deriveMobileCapabilities(actor.role, actor.permissions).recordSessions) fail("permission_denied", "Tu rol no permite registrar sesiones.", 403);
+  const today = collectionDateTime(new Date()).date;
+  const rows = await all(db, `SELECT a.id, a.start_time, a.end_time, a.session_type, a.status
+    FROM session_appointments a JOIN personnel_profiles p ON p.id = a.profile_id
+    WHERE a.profile_id = ? AND a.professional_account_id = ? AND a.session_date = ?
+      AND p.status = 'active' AND a.status IN ('scheduled', 'in_progress') AND a.intervention_session_id IS NULL
+      AND (a.clinical_session_run_id IS NULL OR EXISTS (
+        SELECT 1 FROM clinical_session_runs r WHERE r.id = a.clinical_session_run_id
+          AND r.source = 'web' AND r.status = 'draft' AND r.professional_account_id = a.professional_account_id
+          AND r.profile_id = a.profile_id AND r.appointment_id = a.id))
+    ORDER BY a.start_time, a.id`, profileId, actor.id, today);
+  const appointments: TodayCollectionAppointment[] = rows.map((row) => ({ id: text(row.id), startTime: text(row.start_time), endTime: text(row.end_time), sessionType: text(row.session_type), inProgress: row.status === "in_progress" }));
+  if (appointmentId && !appointments.some((item) => item.id === appointmentId)) fail("appointment_unavailable_today", "Esta cita ya no está disponible para tu sesión de hoy. Cierra la preparación y vuelve a abrirla desde el niño.", 409);
+  if (!appointmentId && appointments.length > 1) return { appointments, preparation: null, draft: null };
+  const selectedId = appointmentId || appointments[0]?.id || null;
+  if (!selectedId && actor.role === "terapeuta") fail("appointment_required_today", "No tienes una cita disponible para hoy con este niño. Revisa su asignación con coordinación.", 409);
+  // Existing rules still govern ad hoc sessions for other roles and assigned children.
+  return { appointments: [], ...await prepareWebCollection(db, actor, profileId, selectedId) };
 }
 
 export async function startWebCollection(db: CollectionDatabase, actor: CollectionActor, raw: unknown) {
