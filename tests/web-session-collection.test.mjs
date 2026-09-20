@@ -10,6 +10,7 @@ import {
   collectionPayload,
   isDuplicateTrialTap,
   targetDefinition,
+  voidLastObservation,
 } from '../lib/mobile-collection.ts';
 import { syncWebCollection } from '../lib/mobile-collection-server.ts';
 import {
@@ -85,6 +86,23 @@ test('la toma web prepara alertas, congela targets y crea un único borrador per
   assert.equal(resumed.resumed, true);
   assert.equal(resumed.draft.id, opened.draft.id);
   assert.equal(f.sql.prepare('SELECT count(*) AS n FROM clinical_session_runs').get().n, 1);
+  f.sql.close();
+});
+
+test('Deshacer persiste el ensayo como anulado y mantiene agregado y eventos activos en acuerdo', async () => {
+  const f = fixture();
+  const draft = structuredClone((await start(f)).draft);
+  const target = draft.preparation.programs[0].targets[0];
+  const responses = ['I', 'G', 'X', 'V'];
+  draft.captures[target.id] = { targetId: target.id, definition: targetDefinition(target), note: '', opportunities: 4, timerStartedAt: null, observations: responses.map((responseCode, index) => ({ id: randomUUID(), at: new Date(Date.parse(draft.startedAt) + index + 1).toISOString(), value: responseCode === 'I' ? 1 : 0, responseCode })) };
+  const voidedAt = new Date(Date.parse(draft.startedAt) + 10).toISOString();
+  draft.captures[target.id] = voidLastObservation(draft.captures[target.id], voidedAt, actor.id);
+  await saveWebCollectionDraft(f.db, actor, draft);
+  const stored = JSON.parse(f.sql.prepare("SELECT collection_snapshot FROM clinical_session_runs WHERE source='web' AND status='draft'").get().collection_snapshot);
+  assert.equal(stored.captures[target.id].opportunities, 3);
+  assert.equal(stored.captures[target.id].observations.length, 4);
+  assert.deepEqual(stored.captures[target.id].observations.at(-1), { ...draft.captures[target.id].observations.at(-1), removedAt: voidedAt, voided: true, voidedAt, voidedByAccountId: actor.id, voidReason: 'undo_last_trial' });
+  assert.deepEqual(stored.captures[target.id].observations.filter((event) => !event.voided && !event.removedAt).map((event) => event.responseCode), ['I', 'G', 'X']);
   f.sql.close();
 });
 

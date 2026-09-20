@@ -61,9 +61,10 @@ type Profile = {
 };
 
 type Evaluation = { id: string; programContext: string; cycleLabel: string; instrumentVersion: string; routeType: string; status: string; archivedAt: string | null; updatedAt: string };
-type Target = { id: string; code: string; name: string; specificObjective: string; state: string; measurement: string; unitLabel: string };
+type Target = { id: string; code: string; name: string; specificObjective: string; state: string; measurement: string; unitLabel: string; lastSampledDate?: string | null; maintenanceDue?: boolean; maintenanceDueDate?: string | null };
 type Program = { id: string; name: string; objective: string; instructions: string; status: string; updatedAt: string; targets: Target[]; graphConfig?: { graphType?: string; designType?: string; primaryTargetId?: string | null } };
-type Session = { id: string; clinicalSessionRunId?: string | null; programId: string; programName: string; sessionDate: string; context: string; notes: string; status: string; results: unknown[]; professionalName?: string; durationMinutes?: number | null };
+type TargetTransition = { targetId: string; code: string; targetName: string; from: string; to: string; reason: string };
+type Session = { id: string; clinicalSessionRunId?: string | null; programId: string; programName: string; sessionDate: string; context: string; notes: string; status: string; results: unknown[]; transitions?: TargetTransition[]; professionalName?: string; durationMinutes?: number | null };
 type Graph = { id: string; title: string; objective: string; graphType: string; designType: string; measurement: string; status: string; pointCount: number; updatedAt: string; linkedProgramId: string | null; programName: string };
 type Report = { id: string; title: string; reportType: string; status: "draft" | "finalized"; authorName: string; finalizedAt: string | null; updatedAt: string };
 type Document = { id: string; fileName: string; contentType: string; sizeBytes: number; description: string; createdAt: string };
@@ -71,19 +72,6 @@ type ABCRecord = { id: string; eventDate: string; eventTime: string; antecedentL
 type Capabilities = { evaluations: boolean; programs: boolean; sessions: boolean; graphs: boolean; reports: boolean; abc: boolean; manageChild: boolean };
 type Dossier = { profile: Profile; evaluations: Evaluation[]; programs: Program[]; sessions: Session[]; graphs: Graph[]; reports: Report[]; abcRecords: ABCRecord[]; documents: Document[]; capabilities: Capabilities };
 type SectionKey = "overview" | "general" | "evaluations" | "programs" | "sessions" | "graphs" | "abc" | "reports" | "documents" | "service-plan";
-
-const SECTION_LABELS: Record<SectionKey, string> = {
-  overview: "Resumen",
-  general: "Datos generales",
-  evaluations: "Evaluaciones",
-  programs: "Programas",
-  sessions: "Sesiones",
-  graphs: "Gráficas",
-  abc: "Registro ABC",
-  reports: "Informes",
-  documents: "Documentos",
-  "service-plan": "Plan de servicio",
-};
 
 function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "NI";
@@ -113,6 +101,10 @@ function ageFrom(dateOfBirth: string) {
 
 function statusLabel(value: string) {
   return ({ active: "Activo", archived: "Archivado", draft: "Borrador", closed: "Cerrada", initial: "Inicial", teaching: "En enseñanza", reevaluation: "Reevaluación", complete: "Completada", baseline: "Línea base", intervention: "Intervención", acquisition: "Adquisición", generalization: "Masterizado", maintenance: "Generalizado", mastered: "Masterizado", generalized: "Generalizado", paused: "Pausado" } as Record<string, string>)[value] || value;
+}
+
+function targetPhaseLabel(value: string) {
+  return ({ baseline: "Línea base", acquisition: "Adquisición", generalization: "Masterizado", maintenance: "Generalizado", closed: "Cerrado" } as Record<string, string>)[value] || value;
 }
 
 function documentIcon(contentType: string) {
@@ -202,16 +194,15 @@ export default function ChildProfileWorkspace({
   const child = data?.profile || profile;
   const age = ageFrom(child.dateOfBirth);
   const sessionSummary = useMemo(() => summarizeClosedSessions(data?.sessions || []), [data]);
-  const counts = useMemo(() => ({
-    evaluations: data?.evaluations.length || 0,
-    programs: data?.programs.length || 0,
-    sessions: sessionSummary.sessionCount,
-    graphs: data?.graphs.length || 0,
-    abc: data?.abcRecords.length || 0,
-    reports: data?.reports.length || 0,
-    documents: data?.documents.length || 0,
-    "service-plan": data?.programs.filter((program) => program.status === "active").length || 0,
-  }), [data, sessionSummary.sessionCount]);
+  const recentCriterionTransitions = useMemo(() => {
+    const seen = new Set<string>();
+    return (data?.sessions || []).flatMap((session) => (session.transitions || []).map((transition) => ({ ...transition, sessionDate: session.sessionDate, programName: session.programName })))
+      .filter((transition) => transition.to !== "acquisition" && !seen.has(transition.targetId) && Boolean(seen.add(transition.targetId)))
+      .slice(0, 5);
+  }, [data]);
+  const maintenanceDueTargets = useMemo(() => (data?.programs || []).filter((program) => program.status === "active").flatMap((program) => program.targets
+    .filter((target) => target.state === "maintenance" && target.maintenanceDue === true)
+    .map((target) => ({ ...target, programName: program.name }))), [data]);
 
   const permitted = (key: SectionKey) => {
     if (!data || key === "overview" || key === "general" || key === "documents") return true;
@@ -219,16 +210,16 @@ export default function ChildProfileWorkspace({
     return data.capabilities[key];
   };
 
-  const modules: Array<{ key: Exclude<SectionKey, "overview">; label: string; description: string; Icon: ComponentType<{ size?: number }> }> = [
-    { key: "general", label: "Datos generales", description: "Identificación, contacto y responsables", Icon: UserRound },
-    { key: "evaluations", label: "Evaluaciones", description: "Líneas base, progreso y reevaluaciones", Icon: ClipboardList },
-    { key: "programs", label: "Programas", description: "Intervenciones y objetivos activos", Icon: BookOpenCheck },
-    { key: "sessions", label: "Sesiones", description: "Encuentros cerrados y programas trabajados", Icon: CalendarDays },
-    { key: "graphs", label: "Gráficas", description: "Evolución visual de los datos", Icon: BarChart3 },
-    { key: "abc", label: "Registro ABC", description: "Observaciones descriptivas A-B-C", Icon: ListTree },
-    { key: "reports", label: "Informes", description: "Borradores y documentos finalizados", Icon: FileText },
-    { key: "documents", label: "Documentos", description: "PDF, Word, Excel y CSV", Icon: FolderOpen },
-    { key: "service-plan", label: "Plan de servicio", description: "Vista integrada de programas y targets", Icon: ShieldCheck },
+  const modules: Array<{ key: Exclude<SectionKey, "overview">; label: string; shortLabel: string }> = [
+    { key: "general", label: "Datos generales", shortLabel: "Datos" },
+    { key: "evaluations", label: "Evaluaciones", shortLabel: "Evaluación" },
+    { key: "programs", label: "Programas", shortLabel: "Programas" },
+    { key: "sessions", label: "Sesiones", shortLabel: "Sesiones" },
+    { key: "graphs", label: "Gráficas", shortLabel: "Gráficas" },
+    { key: "abc", label: "Registro ABC", shortLabel: "ABC" },
+    { key: "reports", label: "Informes", shortLabel: "Informes" },
+    { key: "documents", label: "Documentos", shortLabel: "Archivos" },
+    { key: "service-plan", label: "Plan de servicio", shortLabel: "Plan" },
   ];
 
   async function uploadDocument() {
@@ -283,13 +274,14 @@ export default function ChildProfileWorkspace({
 
   function renderSection() {
     if (!data) return null;
-    if (section === "overview") return <div className="child-module-grid">{modules.map(({ key, label, description: text, Icon }) => {
-      const access = permitted(key);
-      const count = key === "general" ? undefined : counts[key as keyof typeof counts];
-      return <button className={`child-module-card module-${key} ${!access ? "restricted" : ""}`} key={key} disabled={!access} onClick={() => setSection(key)}>
-        <span className="child-module-icon"><Icon size={24}/></span><span><strong>{label}</strong><small>{access ? text : "Sin permiso para consultar"}</small></span>{access ? <em>{typeof count === "number" ? count : "Abrir"}</em> : <LockKeyhole size={16}/>} 
-      </button>;
-    })}</div>;
+    if (section === "overview") return <div className="child-overview-dashboard">
+      <header className="child-overview-heading"><div><p className="section-kicker">Resumen clínico</p><h2>Qué requiere atención</h2></div><span>{sessionSummary.sessionCount} sesión{sessionSummary.sessionCount === 1 ? "" : "es"} cerrada{sessionSummary.sessionCount === 1 ? "" : "s"}</span></header>
+      <section className="child-today-action"><span><CalendarDays size={24}/></span><div><strong>Sesión de hoy</strong><p>{profile.status === "active" ? "Prepara la cita disponible y comienza la toma sin pasar por el calendario." : "El expediente está archivado y no admite nuevas sesiones."}</p></div><div>{profile.status === "active" && onStartTodaySession ? <StartTodaySessionButton onClick={() => onStartTodaySession(profile.id)}/> : <button className="secondary-formation-button" onClick={() => setSection("sessions")}>Ver sesiones</button>}</div></section>
+      <div className="child-overview-panels">
+        <section className="child-action-panel"><header><span className="criterion"><CheckCircle2 size={18}/></span><div><strong>Targets que alcanzaron criterio</strong><small>Cambios de fase recientes</small></div><em>{recentCriterionTransitions.length}</em></header>{recentCriterionTransitions.length ? <div className="child-action-list">{recentCriterionTransitions.map((transition) => <article key={`${transition.targetId}:${transition.sessionDate}`}><div><strong>{transition.code} · {transition.targetName}</strong><small>{transition.programName} · {formatDate(transition.sessionDate)}</small></div><span>{targetPhaseLabel(transition.to)}</span></article>)}</div> : <p className="child-action-empty">No hay cambios de fase recientes.</p>}<button className="child-panel-link" onClick={onOpenPrograms}>Abrir programas <ChevronRight size={15}/></button></section>
+        <section className="child-action-panel"><header><span className="maintenance"><Activity size={18}/></span><div><strong>Sondas de mantenimiento</strong><small>Generalización que ya debe comprobarse</small></div><em>{maintenanceDueTargets.length}</em></header>{maintenanceDueTargets.length ? <div className="child-action-list">{maintenanceDueTargets.map((target) => <article key={target.id}><div><strong>{target.code} · {target.name}</strong><small>{target.programName}</small></div><span>{target.maintenanceDueDate ? `Pendiente desde ${formatDate(target.maintenanceDueDate)}` : "Primera sonda pendiente"}</span></article>)}</div> : <p className="child-action-empty">No hay sondas pendientes.</p>}<button className="child-panel-link" onClick={onOpenPrograms}>Revisar programas <ChevronRight size={15}/></button></section>
+      </div>
+    </div>;
 
     if (!permitted(section)) return <EmptySection title="Acceso restringido" text="El rol de esta cuenta no permite consultar este apartado."/>;
 
@@ -331,11 +323,10 @@ export default function ChildProfileWorkspace({
 
   if (loadError) return <div className="load-error" role="alert"><p>{loadError}</p><button onClick={() => setReloadRevision(current => current + 1)}>Reintentar carga</button><button onClick={onBack}>Volver a niños</button></div>;
   return <div className="child-dossier">
-    <button className="back-button child-back" onClick={onBack}><ArrowLeft size={17}/> Volver al directorio de niños</button>
-    <section className="child-identity-card"><ProfilePhoto name={child.fullName} src={child.photoUrl} avatarClassName="child-avatar" editable={canManage} uploading={photoUploading} onFile={changePhoto}/><div className="child-identity-copy"><p className="section-kicker">Expediente infantil</p><h1>{child.fullName}</h1><p><MapPin size={14}/> Sede {child.site}{child.internalCode ? ` · ${child.internalCode}` : ""}</p><div><span className={`child-status ${child.status === "archived" ? "archived" : ""}`}><CheckCircle2 size={13}/> {statusLabel(child.status)}</span>{age !== null && <span><CalendarDays size={13}/> {age} años</span>}{child.diagnosis && <span><Stethoscope size={13}/> {child.diagnosis}</span>}</div></div><div className="child-identity-actions"><small>Expediente centralizado</small>{canManage && <button className="secondary-formation-button" onClick={onEdit}><Edit3 size={15}/> Editar datos</button>}</div></section>
-
-    <nav className="child-section-nav" aria-label="Apartados del expediente"><button className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}>Resumen</button>{modules.map((module) => <button key={module.key} className={section === module.key ? "active" : ""} disabled={!permitted(module.key)} onClick={() => setSection(module.key)}>{module.label}{!permitted(module.key) && <LockKeyhole size={12}/>}</button>)}</nav>
-    <div className="child-section-heading"><div><p className="section-kicker">{child.fullName}</p><h2>{SECTION_LABELS[section]}</h2></div>{section !== "overview" && <button onClick={() => setSection("overview")}>Ver todos los apartados</button>}</div>
+    <div className="child-dossier-header">
+      <section className="child-identity-card"><button className="child-identity-back" aria-label="Volver al directorio de niños" onClick={onBack}><ArrowLeft size={18}/><span>Niños</span></button><ProfilePhoto name={child.fullName} src={child.photoUrl} avatarClassName="child-avatar" editable={canManage} uploading={photoUploading} onFile={changePhoto}/><div className="child-identity-copy"><h1>{child.fullName}</h1><p><MapPin size={14}/> Sede {child.site}{child.internalCode ? ` · ${child.internalCode}` : ""}</p><div><span className={`child-status ${child.status === "archived" ? "archived" : ""}`}><CheckCircle2 size={13}/> {statusLabel(child.status)}</span>{age !== null && <span><CalendarDays size={13}/> {age} años</span>}{child.diagnosis && <span className="child-diagnosis"><Stethoscope size={13}/> {child.diagnosis}</span>}</div></div>{canManage && <div className="child-identity-actions"><button className="secondary-formation-button" onClick={onEdit}><Edit3 size={15}/><span>Editar datos</span></button></div>}</section>
+      <nav className="child-section-nav" aria-label="Apartados del expediente"><button aria-current={section === "overview" ? "page" : undefined} className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}>Resumen</button>{modules.map((module) => <button key={module.key} aria-label={module.label} aria-current={section === module.key ? "page" : undefined} className={section === module.key ? "active" : ""} disabled={!permitted(module.key)} onClick={() => setSection(module.key)}><span className="child-nav-full">{module.label}</span><span className="child-nav-short" aria-hidden="true">{module.shortLabel}</span>{!permitted(module.key) && <LockKeyhole size={12}/>}</button>)}</nav>
+    </div>
     {loading ? <div className="child-dossier-loading"><LoaderCircle className="spin" size={28}/><strong>Cargando expediente…</strong></div> : renderSection()}
   </div>;
 }

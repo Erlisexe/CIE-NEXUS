@@ -40,6 +40,7 @@ import {
   isDiscrete,
   stopCollectionClocks,
   targetDefinition,
+  voidLastObservation,
   type CollectionAbc,
   type CollectionDraft,
   type CollectionPreparation,
@@ -314,10 +315,9 @@ export default function RealSessionCollector({ initialDraft, onClosed, onDiscard
 
   function undoLast() {
     if (!focused || !currentCapture) return;
-    const active = activeObservations(currentCapture);
-    const last = active.at(-1); if (!last) return;
+    if (!activeObservations(currentCapture).length) return;
     const at = new Date().toISOString();
-    changeCapture(focused, (capture) => ({ ...capture, opportunities: Math.max(0, capture.opportunities - 1), observations: capture.observations.map((event) => event.id === last.id ? { ...event, removedAt: at } : event) }));
+    changeCapture(focused, (capture) => voidLastObservation(capture, at, draftRef.current.preparation.professionalAccountId));
   }
 
   function adjustFrequencyFor(target: CollectionTarget, amount: number) {

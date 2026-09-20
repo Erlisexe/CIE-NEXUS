@@ -13,6 +13,7 @@ import {
   trainingCycles,
 } from "../../../db/schema";
 import { apiAccountGuard, canAccessChild, hasPermission } from "../../../lib/access-control";
+import { collectionDateTime, maintenanceProbeStatus, normalizeSessionTargetConfig } from "../../../lib/mobile-collection";
 import { signedProfilePhotoMap } from "../../../lib/profile-photos";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
@@ -91,6 +92,16 @@ export async function GET(request: Request) {
       : { data: [] };
     const professionalMap = new Map((professionalRows || []).map((professional) => [String(professional.id), String(professional.display_name)]));
     const photoUrls = await signedProfilePhotoMap(supabase, "child", [profileId]);
+    const lastSampledDateByTarget = new Map<string, string>();
+    for (const session of sessionRows) {
+      const results = parsed(session.results, []) as Array<{ targetId?: unknown; sampled?: unknown }>;
+      for (const result of results) {
+        const targetId = typeof result.targetId === "string" ? result.targetId : "";
+        if (!targetId || result.sampled === false || lastSampledDateByTarget.has(targetId)) continue;
+        lastSampledDateByTarget.set(targetId, session.sessionDate);
+      }
+    }
+    const today = collectionDateTime(new Date()).date;
 
     return Response.json({
       profile: {
@@ -113,10 +124,21 @@ export async function GET(request: Request) {
       programs: capabilities.programs ? programRows.map((program) => ({
         ...program,
         graphConfig: parsed(program.graphConfig, {}),
-        targets: targetRows.filter((target) => target.programId === program.id).map((target) => ({
-          ...target,
-          criteria: parsed(target.criteria, {}),
-        })),
+        targets: targetRows.filter((target) => target.programId === program.id).map((target) => {
+          const sessionConfig = normalizeSessionTargetConfig(target.sessionConfig);
+          const lastSampledDate = lastSampledDateByTarget.get(target.id) || null;
+          const maintenance = capabilities.sessions
+            ? maintenanceProbeStatus(target.state, lastSampledDate, sessionConfig.maintenanceProbeEveryDays, today)
+            : null;
+          return {
+            ...target,
+            criteria: parsed(target.criteria, {}),
+            sessionConfig,
+            lastSampledDate,
+            maintenanceDue: maintenance?.due,
+            maintenanceDueDate: maintenance?.dueDate,
+          };
+        }),
       })) : [],
       sessions: sessionRows.map((session) => ({
         ...session,

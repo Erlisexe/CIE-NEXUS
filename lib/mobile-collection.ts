@@ -29,7 +29,7 @@ export type CollectionPreparation = {
   appointment: { id: string; sessionDate: string; startTime: string; endTime: string; notes: string } | null;
   professionalAccountId: string; professionalName?: string; sessionDate?: string; programs: CollectionProgram[]; templates: SessionNoteTemplateSnapshot[]; canRecordAbc: boolean; preparedAt: string;
 };
-export type Observation = { id: string; at: string; value: number; responseCode?: TrialResponseCode; taskStepIndex?: number; taskStep?: string; probe?: boolean; intervalSeconds?: number; removedAt?: string; replaces?: string };
+export type Observation = { id: string; at: string; value: number; responseCode?: TrialResponseCode; taskStepIndex?: number; taskStep?: string; probe?: boolean; intervalSeconds?: number; removedAt?: string; voided?: true; voidedAt?: string; voidedByAccountId?: string; voidReason?: "undo_last_trial"; replaces?: string };
 export type TargetCapture = {
   targetId: string;
   definition: string;
@@ -94,7 +94,32 @@ export function collectionDateTime(at: string | Date) {
   const part = (type: string) => parts.find((p) => p.type === type)?.value || "";
   return { date: `${part("year")}-${part("month")}-${part("day")}`, time: `${part("hour")}:${part("minute")}` };
 }
-export const activeObservations = (capture: TargetCapture) => capture.observations.filter((item) => !item.removedAt).sort((a,b) => a.at.localeCompare(b.at));
+export function maintenanceProbeStatus(state: TargetState | string, lastSampledDate: string | null | undefined, everyDays: number, today: string) {
+  if (state !== "maintenance") return { due: false, dueDate: null };
+  if (!lastSampledDate) return { due: true, dueDate: null };
+  const date = new Date(`${lastSampledDate}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + Math.max(1, Math.round(everyDays || 1)));
+  const dueDate = date.toISOString().slice(0, 10);
+  return { due: dueDate <= today, dueDate };
+}
+export const activeObservations = (capture: TargetCapture) => capture.observations.filter((item) => !item.removedAt && !item.voided && !item.voidedAt).sort((a,b) => a.at.localeCompare(b.at));
+export function voidLastObservation(capture: TargetCapture, voidedAt: string, voidedByAccountId: string): TargetCapture {
+  const active = activeObservations(capture);
+  const last = active.at(-1);
+  if (!last) return capture;
+  return {
+    ...capture,
+    opportunities: Math.max(0, active.length - 1),
+    observations: capture.observations.map((item) => item.id === last.id ? {
+      ...item,
+      removedAt: voidedAt,
+      voided: true,
+      voidedAt,
+      voidedByAccountId,
+      voidReason: "undo_last_trial",
+    } : item),
+  };
+}
 export function targetDefinition(t: CollectionTarget) { return JSON.stringify([t.id, t.code, t.name, t.specificObjective, t.measurement, t.unitLabel, normalizeCriteria(t.criteria, t.measurement), normalizeSessionTargetConfig(t.sessionConfig)]); }
 export function programDefinition(p: CollectionProgram) { return JSON.stringify([p.id, p.name, p.objective, p.instructions]); }
 export function templateDefinition(t: SessionNoteTemplateSnapshot) { return JSON.stringify([t.id, t.name, t.description, t.fields.map((f) => [f.id, f.label, f.guidance, f.required])]); }
@@ -222,13 +247,19 @@ export function validateCollectionPayload(raw: unknown): CollectionPayload {
       if (c.definition !== targetDefinition(t)) fail("La definición de la medición no coincide con la preparación.");
       for (const e of c.observations) {
         if (!e || !uuid.test(e.id) || eventIds.has(e.id) || !at(e.at) || !Number.isFinite(e.value) || e.value < 0 || (e.removedAt && !at(e.removedAt))) fail("Un registro es inválido o está duplicado.");
+        const explicitVoid = Boolean(e.voided || e.voidedAt || e.voidedByAccountId || e.voidReason);
+        if (explicitVoid && (e.voided !== true || !at(e.voidedAt) || e.voidedByAccountId !== body.preparation.professionalAccountId || e.voidReason !== "undo_last_trial" || (e.removedAt && e.removedAt !== e.voidedAt))) fail("Un ensayo anulado no conserva una trazabilidad válida.");
         if (Date.parse(e.at) < Date.parse(body.startedAt) || Date.parse(e.at) > Date.parse(body.endedAt!) + 1000) fail("Un registro está fuera del horario de la sesión.");
+        if (e.removedAt && (Date.parse(e.removedAt) < Date.parse(e.at) || Date.parse(e.removedAt) > Date.parse(body.endedAt!) + 1000)) fail("La anulación de un ensayo está fuera del horario de la sesión.");
+        if (e.voidedAt && (Date.parse(e.voidedAt) < Date.parse(e.at) || Date.parse(e.voidedAt) > Date.parse(body.endedAt!) + 1000)) fail("La anulación de un ensayo está fuera del horario de la sesión.");
+        if (e.removedAt && !explicitVoid) Object.assign(e, { voided: true, voidedAt: e.removedAt, voidedByAccountId: body.preparation.professionalAccountId, voidReason: "undo_last_trial" as const });
         if (isDiscrete(t.measurement) && e.value !== 0 && e.value !== 1) fail("Los ensayos discretos sólo admiten 1 o 0.");
         if (e.responseCode && !["I", "G", "V", "M", "FP", "FT", "X"].includes(e.responseCode)) fail("Un nivel de ayuda no es válido.");
         if (e.taskStepIndex !== undefined && (!Number.isInteger(e.taskStepIndex) || e.taskStepIndex < 0 || e.taskStepIndex > 99 || !str(e.taskStep || "", 500))) fail("Un paso del análisis de tarea no es válido.");
         if (t.measurement === "frequency" && !Number.isInteger(e.value)) fail("La frecuencia debe ser un número entero.");
         eventIds.add(e.id);
       }
+      if (isDiscrete(t.measurement) && activeObservations(c).length !== c.opportunities) fail("Los ensayos visibles y el total de oportunidades no coinciden.");
     }
   }
   if (Object.keys(body.captures).some((id) => !targetIds.has(id))) fail("Hay datos de un target ajeno a la sesión.");

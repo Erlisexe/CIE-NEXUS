@@ -1,6 +1,6 @@
 import { normalizeCriteria, normalizeTargetState, normalizeTrials, replayClinicalProgram, type ClinicalSessionResult } from "./clinical-mastery.ts";
 import { DEFAULT_SESSION_NOTE_TEMPLATE, formatSessionNoteText, normalizeSessionNoteValues, sanitizeSessionNoteFields, type SessionNoteTemplateSnapshot } from "./session-note-templates.ts";
-import { CollectionError, capturedResult, collectionDateTime, normalizeSessionTargetConfig, programDefinition, targetDefinition, templateDefinition, validateCollectionPayload, validateCollectionReview, type CollectionPayload, type CollectionPreparation, type CollectionProgram, type CollectionReceipt, type CollectionTarget } from "./mobile-collection.ts";
+import { CollectionError, capturedResult, collectionDateTime, maintenanceProbeStatus, normalizeSessionTargetConfig, programDefinition, targetDefinition, templateDefinition, validateCollectionPayload, validateCollectionReview, type CollectionPayload, type CollectionPreparation, type CollectionProgram, type CollectionReceipt, type CollectionTarget } from "./mobile-collection.ts";
 import { deriveMobileCapabilities } from "./mobile-api-contract.ts";
 
 type Row = Record<string, unknown>;
@@ -47,11 +47,6 @@ function clinicalAlerts(profile: Row) {
     reinforcers: values(["reforz", "refuer", "preferenc", "motivador"]),
   };
 }
-function addDays(date: string, days: number) {
-  const value = new Date(`${date}T12:00:00Z`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
-}
 export async function prepareMobileCollection(db: CollectionDatabase, actor: CollectionActor, profileId: string, appointmentId: string | null): Promise<CollectionPreparation> {
   const { profile, appointment } = await requireScope(db, actor, profileId, appointmentId);
   const programs = await all(db, "SELECT * FROM intervention_programs WHERE profile_id = ? AND status = 'active' ORDER BY name", profileId);
@@ -70,9 +65,9 @@ export async function prepareMobileCollection(db: CollectionDatabase, actor: Col
   }
   const activePrograms = programs.map((p) => programFromRow(p, targets)).map((p) => ({ ...p, targets: p.targets.filter((t) => t.state !== "closed").map((target) => {
     const history = historyByTarget.get(target.id);
-    const maintenanceDueDate = target.state === "maintenance" && history?.date ? addDays(history.date, target.sessionConfig.maintenanceProbeEveryDays) : null;
-    return { ...target, lastPromptCode: history?.prompt || null, lastSampledDate: history?.date || null, maintenanceDueDate,
-      maintenanceDue: target.state !== "maintenance" || !maintenanceDueDate || maintenanceDueDate <= today };
+    const maintenance = maintenanceProbeStatus(target.state, history?.date, target.sessionConfig.maintenanceProbeEveryDays, today);
+    return { ...target, lastPromptCode: history?.prompt || null, lastSampledDate: history?.date || null, maintenanceDueDate: maintenance.dueDate,
+      maintenanceDue: target.state !== "maintenance" || maintenance.due };
   }) })).filter((p) => p.targets.length);
   if (!activePrograms.length) fail("programs_required", "El niño no tiene programas activos con targets abiertos.", 400);
   return { profile: { id: text(profile.id), fullName: text(profile.full_name), site: text(profile.site), clinicalAlerts: clinicalAlerts(profile) },

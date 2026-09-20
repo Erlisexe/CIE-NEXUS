@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { collectionHash, prepareMobileCollection, syncMobileCollection } from '../lib/mobile-collection-server.ts';
-import { createCollectionDraft, closeCollectionDraft, collectionPayload, targetDefinition, capturedResult, reviewCollectionConfiguration, stopCollectionClocks, validateCollectionPayload } from '../lib/mobile-collection.ts';
+import { activeObservations, createCollectionDraft, closeCollectionDraft, collectionPayload, targetDefinition, capturedResult, reviewCollectionConfiguration, stopCollectionClocks, validateCollectionPayload, voidLastObservation } from '../lib/mobile-collection.ts';
 import { normalizeCriteria } from '../lib/clinical-mastery.ts';
 
 const actor = { id: 'professional-1', displayName: 'Prueba aislada', role: 'terapeuta', assignedProfileIds: ['child-1'], permissions: ['sessions.record', 'abc.record'] };
@@ -117,6 +117,19 @@ test('recuperación de relojes y deshacer conservan la evidencia de captura',asy
   assert.equal(d.elapsedMs,15000); assert.equal(d.runningSince,null); assert.equal(d.captures[t.id].observations[0].value,10);
   d.captures[t.id].observations=[{id:randomUUID(),at:'2026-09-01T15:00:01.000Z',value:1,removedAt:'2026-09-01T15:00:05.000Z'},{id:randomUUID(),at:'2026-09-01T15:00:02.000Z',value:0}];
   assert.deepEqual(capturedResult(t,d.captures[t.id]).trials,[0]); assert.equal(d.captures[t.id].observations.length,2); f.sql.close();
+});
+
+test('deshacer anula el ensayo con fecha, autor y motivo sin contarlo',async()=>{
+  const f=fixture(),p=await payloadFor(f,{correct:3,total:4,programs:1});
+  const original=p.captures.p1t,voidedAt='2026-09-01T15:30:00.000Z';
+  p.captures.p1t=voidLastObservation(original,voidedAt,actor.id);
+  assert.equal(p.captures.p1t.observations.length,4);
+  assert.equal(p.captures.p1t.opportunities,3);
+  assert.equal(activeObservations(p.captures.p1t).length,3);
+  assert.deepEqual(p.captures.p1t.observations.at(-1),{...original.observations.at(-1),removedAt:voidedAt,voided:true,voidedAt,voidedByAccountId:actor.id,voidReason:'undo_last_trial'});
+  validateCollectionPayload(p);
+  const invalid=structuredClone(p);delete invalid.captures.p1t.observations.at(-1).voidedByAccountId;
+  assert.throws(()=>validateCollectionPayload(invalid),e=>e.code==='invalid_collection');f.sql.close();
 });
 
 test('dos reenvíos simultáneos de la misma sesión obtienen un único recibo',async()=>{

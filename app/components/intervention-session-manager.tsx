@@ -287,6 +287,7 @@ export default function InterventionSessionManager({
   canManageSessionNoteTemplates = false,
   onOpenProgramGraph,
   onRegisterABC,
+  onBackToProfile,
 }: {
   mode: "programs" | "sessions";
   cycles: CycleOption[];
@@ -306,6 +307,7 @@ export default function InterventionSessionManager({
   canManageSessionNoteTemplates?: boolean;
   onOpenProgramGraph?: (programId: string) => void;
   onRegisterABC?: (context: { profileId: string; profileName: string; programId: string; appointmentId: string | null }) => void;
+  onBackToProfile?: () => void;
 }) {
   const [programs, setPrograms] = useState<InterventionProgram[]>([]);
   const [sessions, setSessions] = useState<InterventionSession[]>([]);
@@ -452,6 +454,7 @@ export default function InterventionSessionManager({
   }, [runningTimerTargetId]);
 
   const activeProfiles = profiles.filter((profile) => profile.status === "active" && (selectedSite === "Todas" || profile.site === selectedSite));
+  const dossierProfile = selectedProfileId === "all" ? null : profiles.find((profile) => profile.id === selectedProfileId) || null;
   const scopedAppointments = appointments.filter((appointment) => matchesClinicalFilter({ ...appointment, site: profiles.find((profile) => profile.id === appointment.profileId)?.site || appointment.site }, { site: selectedSite, profileId: selectedProfileId }));
   const institutionalToday = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(new Date());
   const activeProfileIds = new Set(profiles.filter((profile) => profile.status === "active").map((profile) => profile.id));
@@ -1043,11 +1046,12 @@ export default function InterventionSessionManager({
   if (mode === "programs") {
     const states = Object.fromEntries(STATE_ORDER.map((state) => [state, allTargets.filter((target) => target.state === state).length]));
     return <>
+      {dossierProfile && onBackToProfile && <nav className="clinical-breadcrumb" aria-label="Ruta de navegación"><button onClick={onBackToProfile}><ArrowLeft size={16}/> Expediente de {dossierProfile.fullName}</button><ChevronRight size={15}/><span aria-current="page">Programas</span></nav>}
       <div className="formation-heading"><div><p className="section-kicker">Programas de intervención</p><h1>Objetivos que pueden medirse por sesión</h1><p>Cada programa conserva un objetivo general; cada target define el desempeño específico, su medición y sus criterios de avance.</p></div>{canManagePrograms && <button className="primary-formation-button" onClick={openNewProgram}><Plus size={17}/> Crear programa</button>}</div>
       <section className="target-lifecycle" aria-label="Estados de los targets">
-        {STATE_ORDER.map((state, index) => <div key={state} className={state}><span>{states[state] || 0}</span><strong>{stateLabel(state)}</strong>{index < STATE_ORDER.length - 1 && <ArrowRight size={16}/>}</div>)}
+        {STATE_ORDER.map((state, index) => <div key={state} className={`${state} ${states[state] ? "" : "empty"}`}><span>{states[state] || 0}</span><strong>{stateLabel(state)}</strong>{index < STATE_ORDER.length - 1 && <ArrowRight size={16}/>}</div>)}
       </section>
-      <section className="baseline-branch-note"><Layers3 size={20}/><div><strong>La Línea base tiene dos salidas</strong><p>Al completar su ventana de observación, un target pasa directamente a <b>Cerrado</b> si cumple el criterio; si no lo cumple, entra en <b>Adquisición</b>. Las demás transiciones avanzan secuencialmente.</p></div></section>
+      <details className="baseline-branch-note"><summary><Layers3 size={18}/><strong>La Línea base tiene dos salidas</strong></summary><p>Si cumple el criterio, el target pasa a <b>Masterizado</b>; si no lo cumple, entra en <b>Adquisición</b>. Desde Adquisición, al cumplir pasa a Masterizado; luego avanza a Generalizado y Cerrado.</p></details>
       {activePrograms.length ? <div className="intervention-program-grid">{activePrograms.map((program) => {
         const expanded = expandedProgramId === program.id;
         return <article className={`intervention-program-card ${expanded ? "expanded" : ""}`} key={program.id}>

@@ -36,6 +36,7 @@ import {
   reviewCollectionConfiguration,
   stopCollectionClocks,
   targetDefinition,
+  voidLastObservation,
   type CollectionAbc,
   type CollectionDraft,
   type CollectionPreparation,
@@ -628,14 +629,9 @@ export function CollectionWorkspace({ controller, bootstrap, appointments, acces
 
   function undo(forTarget = target) {
     const current = sessionDraft.captures[forTarget.id] || blankCapture(forTarget);
-    const last = activeObservations(current).at(-1);
-    if (!last) return;
+    if (!activeObservations(current).length) return;
     const at = new Date().toISOString();
-    changeCapture(forTarget, (value) => ({
-      ...value,
-      opportunities: Math.max(0, value.opportunities - 1),
-      observations: value.observations.map((item) => item.id === last.id ? { ...item, removedAt: at } : item),
-    }));
+    changeCapture(forTarget, (value) => voidLastObservation(value, at, sessionDraft.preparation.professionalAccountId));
   }
 
   function adjustFrequency(forTarget: SessionTarget, amount: number) {

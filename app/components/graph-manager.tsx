@@ -11,6 +11,7 @@ import {
   ArrowUp,
   BarChart3,
   CheckCircle2,
+  ChevronRight,
   CircleDashed,
   ClipboardCheck,
   Clock3,
@@ -630,6 +631,7 @@ export default function GraphManager({
   notify,
   canManage = true,
   onOpenABC,
+  onBackToProfile,
 }: {
   cycles: AutomaticCycle[];
   profiles: LinkableProfile[];
@@ -638,6 +640,7 @@ export default function GraphManager({
   notify: (text: string) => void;
   canManage?: boolean;
   onOpenABC?: () => void;
+  onBackToProfile?: () => void;
 }) {
   const [graphs, setGraphs] = useState<AnalyticGraph[]>([]);
   const [programs, setPrograms] = useState<AutomaticProgram[]>([]);
@@ -1321,6 +1324,7 @@ export default function GraphManager({
 
   if (loadError) return <div className="load-error" role="alert"><p>{loadError}</p><button onClick={() => setReloadRevision(current => current + 1)}>Reintentar carga</button></div>;
   return <>
+    {selectedProfileId !== "all" && onBackToProfile && <nav className="clinical-breadcrumb" aria-label="Ruta de navegación"><button onClick={onBackToProfile}><ArrowLeft size={16}/> Expediente de {profileName(selectedProfileId)}</button><ChevronRight size={15}/><span aria-current="page">Gráficas</span></nav>}
     <div className="formation-heading graph-library-heading"><div><p className="section-kicker">Centro de análisis</p><h1>Gráficas</h1></div>{canManage && <button className="primary-formation-button" onClick={() => { resetForm(); setNewOpen(true); }}><Plus size={17}/> Gráfica manual</button>}</div>
     <div className="automatic-source-switch" role="tablist" aria-label="Fuente de las gráficas automáticas">
       <button role="tab" aria-selected={automaticSource === "evaluations"} className={automaticSource === "evaluations" ? "active" : ""} onClick={() => setAutomaticSource("evaluations")}><ClipboardCheck size={17}/> Evaluaciones</button>
