@@ -527,3 +527,16 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .today-appointment-list>button>span:last-child{font-size:.875rem;font-weight:700;color:#0063a8}
 .session-entry-hint{font-size:.875rem;color:#526778}
 @media(max-width:560px){.child-session-actions{width:100%;flex-direction:column;align-items:stretch}.today-appointment-list{padding:14px}}
+
+/* One visible scope for clinical lists and appointment forms. */
+.clinical-scope-controls{position:sticky;top:0;z-index:25;background:#fff;border:1px solid #cbdce7;border-radius:14px;padding:12px 16px;margin-bottom:20px;box-shadow:0 3px 12px #1238490a}
+.clinical-scope-fields{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.clinical-scope-fields label{display:grid;gap:4px;flex:1;min-width:150px}
+.clinical-scope-fields label>span{font-size:.875rem;font-weight:700;color:#294956}
+.clinical-scope-fields select{width:100%;min-width:0;min-height:44px;background:white;border:1px solid #b8cedc;border-radius:8px;padding:8px 12px;font-size:1rem;color:#1b3c50}
+.clinical-scope-fields>button{display:flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 14px;border:1px solid #bfd4e2;border-radius:8px;background:#edf7fd;color:#0062a6;font-size:.875rem;font-weight:700}
+.clinical-scope-fields>button:disabled{opacity:.6;cursor:default}
+.clinical-scope-controls>p{margin:9px 0 0;font-size:.875rem;line-height:1.45;color:#335463}
+.clinical-scope-controls>p>span{display:block;color:#526a78;font-size:.8125rem}
+.calendar-upcoming-period{margin:4px 0 0;font-size:.875rem;color:#526a78}
+@media(max-width:560px){.clinical-scope-controls{padding:12px}.clinical-scope-fields{gap:8px}.clinical-scope-fields label{flex-basis:100%}.clinical-scope-fields>button{width:100%}.clinical-scope-controls>p>span{display:none}}

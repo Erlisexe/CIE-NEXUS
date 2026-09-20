@@ -197,7 +197,7 @@ export default function ReportManager({
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [profileFilter, setProfileFilter] = useState(selectedProfileId === "all" ? "all" : selectedProfileId);
+  const profileFilter = selectedProfileId;
   const [templatePanel, setTemplatePanel] = useState(false);
   const [templateForm, setTemplateForm] = useState({ name: "", description: "" });
 
@@ -410,10 +410,10 @@ export default function ReportManager({
 
   const visibleReports = useMemo(() => reports.filter((report) => {
     const needle = query.trim().toLocaleLowerCase("es");
-    return (statusFilter === "all" || report.status === statusFilter)
+    return profiles.some((profile) => profile.id === report.profileId) && (statusFilter === "all" || report.status === statusFilter)
       && (profileFilter === "all" || report.profileId === profileFilter)
       && (!needle || [report.title, report.reportType, report.profileName, report.authorName].some((value) => value.toLocaleLowerCase("es").includes(needle)));
-  }), [profileFilter, query, reports, statusFilter]);
+  }), [profiles, profileFilter, query, reports, statusFilter]);
 
   const groupedSources = useMemo(() => ({
     graph: sources.filter((source) => source.kind === "graph"),
@@ -424,12 +424,12 @@ export default function ReportManager({
 
   if (loading) return <section className="formation-panel intervention-empty"><LoaderCircle className="spin" size={28}/><strong>Cargando Informes…</strong></section>;
 
-  if (mode === "preview" && draft) return <div className="report-preview-page">
+  if (mode === "preview" && draft && profiles.some((profile) => profile.id === draft.profileId)) return <div className="report-preview-page">
     <div className="report-preview-toolbar"><button className="back-button" onClick={() => setMode(draft.status === "finalized" ? "library" : "builder")}><ArrowLeft size={16}/> Volver</button><div><p className="section-kicker">Vista previa</p><h1>{draft.title}</h1><span className={`report-status ${draft.status}`}>{draft.status === "finalized" ? <CheckCircle2 size={14}/> : <FileText size={14}/>} {draft.status === "finalized" ? "Finalizado" : "Borrador"}</span></div><div>{draft.status === "draft" && canManage && <button className="secondary-formation-button" onClick={() => setMode("builder")}>Continuar editando</button>}<button className="primary-formation-button" onClick={() => window.print()}><Printer size={16}/> Imprimir / guardar PDF</button></div></div>
     <ReportDocument report={draft} brandName={brandName} logoUrl={logoUrl}/>
   </div>;
 
-  if (mode === "builder" && draft) {
+  if (mode === "builder" && draft && profiles.some((profile) => profile.id === draft.profileId)) {
     const readonly = !canManage || draft.status === "finalized";
     return <div className="report-builder-page">
       <div className="report-builder-topbar"><button className="back-button" onClick={() => setMode("library")}><ArrowLeft size={16}/> Informes</button><div><p className="section-kicker">Constructor modular</p><h1>{draft.id ? draft.title : "Nuevo informe"}</h1><small>{draft.blocks.length} bloques · {draft.sourceSelection.length} fuentes insertadas</small></div><div><button className="secondary-formation-button" onClick={() => setMode("preview")}><Eye size={16}/> Vista previa</button>{canManage && <button className="secondary-formation-button" onClick={() => { setTemplatePanel(true); setTemplateForm({ name: `${draft.title} · plantilla`, description: "Plantilla personalizada creada desde un informe." }); }}><LayoutTemplate size={16}/> Guardar como plantilla</button>}<button className="primary-formation-button" disabled={readonly || saving} onClick={() => saveReport(false)}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar borrador</button><button className="report-finalize-button" disabled={readonly || saving} onClick={() => { if (window.confirm("Al finalizar, este informe quedará de solo lectura. ¿Continuar?")) saveReport(true); }}><Check size={16}/> Finalizar</button></div></div>
@@ -471,7 +471,7 @@ export default function ReportManager({
 
     <section className="report-template-library"><header><div><p className="section-kicker">Puntos de partida</p><h2>Plantillas reutilizables</h2></div><span>{templates.length} plantilla{templates.length === 1 ? "" : "s"}</span></header><div>{templates.map((template) => <article key={template.id}><span><LayoutTemplate size={20}/></span><div><small>{template.reportType}{template.builtIn ? " · Institucional" : " · Personalizada"}</small><h3>{template.name}</h3><p>{template.description || "Estructura reutilizable para cualquier perfil."}</p></div><footer><span>{template.blocks.length} bloques</span>{canManage && <button onClick={() => startReport(template)}>Usar plantilla <ChevronRight size={15}/></button>}</footer></article>)}</div></section>
 
-    <section className="report-history-panel"><header><div><p className="section-kicker">Historial documental</p><h2>Informes por perfil</h2></div><span>{visibleReports.length} resultado{visibleReports.length === 1 ? "" : "s"}</span></header><div className="report-history-toolbar"><label><Search size={16}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar informe, niño, tipo o autor"/></label><select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">Todos los niños</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos los estados</option><option value="draft">Borradores</option><option value="finalized">Finalizados</option></select></div>
+    <section className="report-history-panel"><header><div><p className="section-kicker">Historial documental</p><h2>Informes por perfil</h2></div><span>{visibleReports.length} resultado{visibleReports.length === 1 ? "" : "s"}</span></header><div className="report-history-toolbar"><label><Search size={16}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar informe, niño, tipo o autor"/></label><select value={profileFilter} onChange={(event) => onSelectProfile(event.target.value)}><option value="all">Todos los niños</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos los estados</option><option value="draft">Borradores</option><option value="finalized">Finalizados</option></select></div>
       {visibleReports.length ? <div className="report-history-table"><div className="report-history-head"><span>Fecha</span><span>Informe</span><span>Perfil</span><span>Tipo</span><span>Autor</span><span>Estado</span><span>Acciones</span></div>{visibleReports.map((report) => <article key={report.id}><span>{dateLabel(report.finalizedAt || report.updatedAt)}</span><div><strong>{report.title}</strong><small>{report.blocks.length} bloques · {report.sourceSelection.length} fuentes</small></div><span>{report.profileName}</span><span>{report.reportType}</span><span>{report.authorName}</span><span className={`report-status ${report.status}`}>{report.status === "finalized" ? <CheckCircle2 size={13}/> : <FileText size={13}/>} {statusLabel(report.status)}</span><div><button onClick={() => openReport(report)} title={report.status === "finalized" ? "Visualizar" : "Editar"}>{report.status === "finalized" ? <Eye size={15}/> : <FileText size={15}/>}</button>{canManage && <button onClick={() => duplicateReport(report)} title="Duplicar"><Copy size={15}/></button>}{canManage && report.status === "draft" && <button className="danger-action" onClick={() => deleteDraft(report)} title="Eliminar borrador"><Trash2 size={15}/></button>}</div></article>)}</div> : <div className="report-empty-history"><FileText size={30}/><strong>No hay informes en esta selección</strong><p>{canManage ? "Crea un informe desde cero o utiliza una plantilla para comenzar." : "No hay documentos disponibles dentro de tu alcance."}</p>{canManage && <button className="primary-formation-button" onClick={() => startReport()}><Plus size={16}/> Crear primer informe</button>}</div>}
     </section>
   </div>;

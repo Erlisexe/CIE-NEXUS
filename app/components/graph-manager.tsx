@@ -700,8 +700,12 @@ export default function GraphManager({
     linkedCycleId: "",
   });
 
-  const selected = useMemo(() => graphs.find((graph) => graph.id === selectedId) || null, [graphs, selectedId]);
-  const activeProgramOptions = programs.filter((program) => program.targets.length > 0);
+  const graphInFilter = (graph: AnalyticGraph) => {
+    const profileId = graph.profileId || programs.find((program) => program.id === graph.linkedProgramId)?.profileId || cycles.find((cycle) => cycle.id === graph.linkedCycleId)?.profileId;
+    return profileId ? profiles.some((profile) => profile.id === profileId) : !graph.linkedProgramId && !graph.linkedCycleId;
+  };
+  const selected = graphs.find((graph) => graph.id === selectedId && graphInFilter(graph)) || null;
+  const activeProgramOptions = programs.filter((program) => program.targets.length > 0 && profiles.some((profile) => profile.id === program.profileId));
   const profilesWithPrograms = profiles.filter((profile) => activeProgramOptions.some((program) => program.profileId === profile.id));
   const effectiveAutomaticProfileId = profilesWithPrograms.some((profile) => profile.id === automaticProfileId)
     ? automaticProfileId
@@ -806,8 +810,8 @@ export default function GraphManager({
   const filtered = graphs.filter((graph) => {
     const matchesArchive = archiveView ? graph.status === "archived" : graph.status === "active";
     const matchesType = typeFilter === "all" || graph.graphType === typeFilter;
-    const graphProfileId = graph.profileId || cycles.find((cycle) => cycle.id === graph.linkedCycleId)?.profileId || null;
-    const matchesProfile = selectedProfileId === "all" || graphProfileId === selectedProfileId;
+    const graphProfileId = graph.profileId || programs.find((program) => program.id === graph.linkedProgramId)?.profileId || cycles.find((cycle) => cycle.id === graph.linkedCycleId)?.profileId || null;
+    const matchesProfile = (selectedProfileId === "all" || graphProfileId === selectedProfileId) && graphInFilter(graph);
     const text = `${graph.title} ${graph.objective} ${graph.measurement} ${profileName(graphProfileId)} ${programName(graph.linkedProgramId)}`.toLowerCase();
     return matchesArchive && matchesType && matchesProfile && text.includes(query.trim().toLowerCase());
   });
@@ -1433,7 +1437,7 @@ export default function GraphManager({
       <div className="graph-library-tools"><label><span>Buscar</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Nombre, objetivo o medida"/></label><label><span>Tipo</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">Todos</option><option value="line">Líneas</option><option value="bar">Barras</option><option value="cumulative">Acumulativas</option></select></label><div className="graph-view-toggle" role="group" aria-label="Estado de las gráficas"><button className={!archiveView ? "active" : ""} onClick={() => setArchiveView(false)}>Activas</button><button className={archiveView ? "active" : ""} onClick={() => setArchiveView(true)}>Archivadas</button></div><span>{filtered.length} resultado{filtered.length === 1 ? "" : "s"}</span></div>
       {loading ? <div className="empty-state"><LoaderCircle className="spin" size={26}/><strong>Cargando gráficas…</strong></div> : filtered.length ? <div className="graph-card-grid">{filtered.map((graph) => {
         const populated = graph.points.filter((point) => point.value !== null).length;
-        const graphProfileId = graph.profileId || cycles.find((cycle) => cycle.id === graph.linkedCycleId)?.profileId || null;
+        const graphProfileId = graph.profileId || programs.find((program) => program.id === graph.linkedProgramId)?.profileId || cycles.find((cycle) => cycle.id === graph.linkedCycleId)?.profileId || null;
         return <article className="graph-library-card" key={graph.id}><div className="graph-card-icon">{graph.graphType === "line" ? <LineChart size={22}/> : graph.graphType === "bar" ? <BarChart3 size={22}/> : <TrendingUp size={22}/>}</div><div className="graph-card-copy"><div><span>{GRAPH_TYPE_LABELS[graph.graphType]}</span>{graph.graphType === "line" && <em>{LINE_DESIGN_LABELS[graph.designType]}</em>}</div><h2>{graph.title}</h2><p>{graph.objective}</p><div className="graph-link-chips"><span>{profileName(graphProfileId)}</span>{graph.linkedProgramId && <span>{programName(graph.linkedProgramId)}</span>}</div><small>{populated}/{graph.points.length} registros con datos · {graph.measurement}</small></div><div className="graph-card-actions"><button className="primary-formation-button" onClick={() => setSelectedId(graph.id)}>Abrir</button><button title="Historial" aria-label={`Historial de ${graph.title}`} onClick={() => openHistory(graph)}><Clock3 size={16}/></button>{canManage && <><button title={graph.status === "archived" ? "Restaurar" : "Archivar"} aria-label={`${graph.status === "archived" ? "Restaurar" : "Archivar"} ${graph.title}`} onClick={() => archiveOrRestore(graph)}>{graph.status === "archived" ? <RotateCcw size={16}/> : <Archive size={16}/>}</button><button className="danger-action" title="Eliminar" aria-label={`Eliminar ${graph.title}`} onClick={() => { setDeleteTarget(graph); setDeleteText(""); }}><Trash2 size={16}/></button></>}</div></article>;
       })}</div> : <div className="empty-state"><CircleDashed size={27}/><strong>{archiveView ? "No hay gráficas archivadas" : "Todavía no hay gráficas en esta vista"}</strong><p>Crea una gráfica y selecciona el diseño que corresponda a la pregunta analítica.</p></div>}
     </section>

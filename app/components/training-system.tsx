@@ -57,6 +57,8 @@ import PackageManager from "./package-manager";
 import GraphManager from "./graph-manager";
 import InterventionSessionManager from "./intervention-session-manager";
 import TodaySessionLauncher from "./today-session-launcher";
+import ClinicalScopeControls from "./clinical-scope-controls";
+import { matchesClinicalFilter, profileMatchesClinicalFilter } from "../../lib/clinical-filter";
 import PersonnelProfileManager, { type LinkableAccount, type PersonnelProfile } from "./personnel-profile-manager";
 import FormationManager from "./formation-manager";
 import AccountManager from "./account-manager";
@@ -396,10 +398,10 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const [form, setForm] = useState({ profileId: "", site: "León", participantName: "", role: "Niño", programContext: "", routeType: "4A" as "4A" | "4B", packageTemplateId: DEFAULT_EVALUATION_PACKAGE.id, sourceCycleId: null as string | null });
 
   const selected = useMemo(() => records.find((record) => record.id === selectedId) ?? null, [records, selectedId]);
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
-  const scopedRecords = records.filter((record) => selectedProfileId !== "all"
-    ? record.profileId === selectedProfileId
-    : selectedSite === "Todas" || record.site === selectedSite);
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId && (selectedSite === "Todas" || profile.site === selectedSite)) ?? null;
+  const clinicalFilter = { site: selectedSite, profileId: selectedProfileId };
+  const clinicalProfiles = profiles.filter((profile) => profileMatchesClinicalFilter(profile, clinicalFilter));
+  const scopedRecords = records.filter((record) => matchesClinicalFilter({ ...record, site: profiles.find((profile) => profile.id === record.profileId)?.site || record.site }, clinicalFilter));
   const activeRecords = scopedRecords.filter((record) => !record.archivedAt);
   const archivedRecords = scopedRecords.filter((record) => Boolean(record.archivedAt));
   const reevaluationCount = activeRecords.filter((record) => record.status === "reevaluation").length;
@@ -461,8 +463,21 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     }));
   }
 
+  function chooseSite(site: string) {
+    setSelectedSite(site);
+    const currentProfile = profiles.find((profile) => profile.id === selectedProfileId);
+    if (currentProfile && site !== "Todas" && currentProfile.site !== site) setSelectedProfileId("all");
+    setSelectedId(null); setScreen(null); setSelectedGraphProgramId(null);
+  }
+
+  function clearClinicalFilter() {
+    setSelectedSite("Todas"); setSelectedProfileId("all"); setSiteFilter("Todas");
+    setSelectedId(null); setScreen(null); setSelectedGraphProgramId(null);
+  }
+
   function chooseProfile(profileId: string) {
     setSelectedProfileId(profileId);
+    setSelectedGraphProgramId(null);
     const profile = profiles.find((item) => item.id === profileId);
     if (profile) setSelectedSite(profile.site);
     setSelectedId(null);
@@ -833,11 +848,11 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   }
 
   function renderOverview() {
-    const scopedPrograms = dashboardPrograms.filter((program) => program.status === "active" && (selectedProfileId !== "all" ? program.profileId === selectedProfileId : selectedSite === "Todas" || program.site === selectedSite));
+    const scopedPrograms = dashboardPrograms.filter((program) => program.status === "active" && matchesClinicalFilter({ ...program, site: profiles.find((profile) => profile.id === program.profileId)?.site || program.site }, clinicalFilter));
     const scopedProgramIds = new Set(scopedPrograms.map((program) => program.id));
     const scopedSessions = dashboardSessions.filter((session) => scopedProgramIds.has(session.programId));
     const openTargets = scopedPrograms.flatMap((program) => program.targets).filter((target) => target.state !== "closed").length;
-    const activeChildren = profiles.filter((profile) => profile.status === "active" && (selectedSite === "Todas" || profile.site === selectedSite));
+    const activeChildren = clinicalProfiles.filter((profile) => profile.status === "active");
     const activeSites = activeSiteNames.length;
     const evaluationTasks = canManageEvaluations ? [
       ...activeRecords.filter((record) => record.status === "reevaluation").map((record) => ({ id: `re-${record.id}`, tone: "violet", label: "Cerrar reevaluación", detail: `${record.participantName} · ${record.programContext}`, action: () => openRecord(record, "reevaluation") })),
@@ -888,6 +903,8 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
       {(can("calendar.view") || can("calendar.manage")) && <CalendarManager
         compact
+        selectedSite={selectedSite}
+        selectedProfileId={selectedProfileId}
         key={todaySessionRevision}
         profiles={profiles}
         notify={flash}
@@ -1062,14 +1079,14 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     : screen === "comparison" ? renderComparison()
     : active === "Inicio" ? renderOverview()
     : active === "Formación" ? <FormationManager notify={flash}/>
-    : active === "Calendario" ? <CalendarManager profiles={profiles} notify={flash} onOpenSession={openScheduledSession}/>
+    : active === "Calendario" ? <CalendarManager selectedSite={selectedSite} selectedProfileId={selectedProfileId} profiles={profiles} notify={flash} onOpenSession={openScheduledSession}/>
     : active === "Reunión" ? <MeetingManager notify={flash}/>
-    : active === "Niños" ? <PersonnelProfileManager onStartTodaySession={canRecordSessions ? (profileId) => { const profile = profiles.find((item) => item.id === profileId); if (profile?.status === "active") setTodaySession({ profileId, profileName: profile.fullName }); } : undefined} profiles={profiles} sites={activeSiteNames} linkableAccounts={linkableAccounts} canManage={canManageChildren} selectedProfileId={selectedProfileId} onSelect={chooseProfile} onProfilesChange={handleProfilesChange} onOpenPrograms={() => setActive("Programas")} onOpenEvaluations={() => setActive("Evaluaciones")} onOpenSessions={() => { setSessionHistoryOnly(true); setAppointmentToOpen(null); setActive("Sesiones"); }} onOpenGraphs={() => { setSelectedGraphProgramId(null); setActive("Gráficas"); }} onOpenProgramGraph={openProgramGraph} onOpenABC={openABC} onOpenReports={() => setActive("Informes")} notify={flash}/>
-    : active === "Programas" ? <InterventionSessionManager mode="programs" cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} onOpenProgramGraph={openProgramGraph}/>
-    : active === "Sesiones" ? <InterventionSessionManager mode="sessions" cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} canManageSessionNoteTemplates={account.role === "direccion_clinica"} initialAppointment={appointmentToOpen} onAppointmentConsumed={consumeAppointment} allowAdHocSessions={account.role !== "terapeuta"} historyOnly={sessionHistoryOnly} onRegisterABC={canRecordABC ? setAbcQuickContext : undefined}/>
-    : active === "Gráficas" ? <GraphManager cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} initialProgramId={selectedGraphProgramId} notify={flash} canManage={canManageGraphs} onOpenABC={canUseABC && selectedProfileId !== "all" ? openABC : undefined}/>
+    : active === "Niños" ? <PersonnelProfileManager selectedSite={selectedSite} onSelectSite={chooseSite} onStartTodaySession={canRecordSessions ? (profileId) => { const profile = profiles.find((item) => item.id === profileId); if (profile?.status === "active") setTodaySession({ profileId, profileName: profile.fullName }); } : undefined} profiles={profiles} sites={activeSiteNames} linkableAccounts={linkableAccounts} canManage={canManageChildren} selectedProfileId={selectedProfileId} onSelect={chooseProfile} onProfilesChange={handleProfilesChange} onOpenPrograms={() => setActive("Programas")} onOpenEvaluations={() => setActive("Evaluaciones")} onOpenSessions={() => { setSessionHistoryOnly(true); setAppointmentToOpen(null); setActive("Sesiones"); }} onOpenGraphs={() => { setSelectedGraphProgramId(null); setActive("Gráficas"); }} onOpenProgramGraph={openProgramGraph} onOpenABC={openABC} onOpenReports={() => setActive("Informes")} notify={flash}/>
+    : active === "Programas" ? <InterventionSessionManager mode="programs" cycles={scopedRecords} profiles={clinicalProfiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} onOpenProgramGraph={openProgramGraph}/>
+    : active === "Sesiones" ? <InterventionSessionManager mode="sessions" cycles={scopedRecords} profiles={clinicalProfiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} canManageSessionNoteTemplates={account.role === "direccion_clinica"} initialAppointment={appointmentToOpen} onAppointmentConsumed={consumeAppointment} allowAdHocSessions={account.role !== "terapeuta"} historyOnly={sessionHistoryOnly} onRegisterABC={canRecordABC ? setAbcQuickContext : undefined}/>
+    : active === "Gráficas" ? <GraphManager cycles={scopedRecords} profiles={clinicalProfiles} selectedProfileId={selectedProfileId} initialProgramId={selectedGraphProgramId} notify={flash} canManage={canManageGraphs} onOpenABC={canUseABC && selectedProfileId !== "all" ? openABC : undefined}/>
     : active === "Registro ABC" && selectedProfile && canUseABC ? <ABCManager profileId={selectedProfile.id} profileName={selectedProfile.fullName} notify={flash}/>
-    : active === "Informes" ? <ReportManager profiles={profiles} selectedProfileId={selectedProfileId} onSelectProfile={chooseProfile} canManage={canManageReports} brandName={settings.pageName} logoUrl={settings.institutionPhotoUrl || settings.platformPhotoUrl} accountName={account.displayName} notify={flash}/>
+    : active === "Informes" ? <ReportManager profiles={clinicalProfiles} selectedProfileId={selectedProfileId} onSelectProfile={chooseProfile} canManage={canManageReports} brandName={settings.pageName} logoUrl={settings.institutionPhotoUrl || settings.platformPhotoUrl} accountName={account.displayName} notify={flash}/>
     : active === "Paquetes" ? <PackageManager packages={evaluationPackages} onPackagesChange={setEvaluationPackages} notify={flash}/>
     : active === "Equipo" ? <TeamProfileDirectory viewerRole={account.role} canOpenChildren={canViewChildren} onOpenChild={(profileId) => { chooseProfile(profileId); setActive("Niños"); }} notify={flash}/>
     : active === "Cuentas" ? <AccountManager profiles={profiles} sites={activeSiteNames} currentRole={account.role} notify={flash}/>
@@ -1080,7 +1097,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const selectedFormPackage = editingRecord?.instrumentSnapshot || activePackages.find((pack) => pack.id === form.packageTemplateId) || activePackages[0] || DEFAULT_EVALUATION_PACKAGE;
   const selectedFormHasRoutes = selectedFormPackage.areas.some((area) => area.route === "4A" || area.route === "4B");
   const formProfile = profiles.find((profile) => profile.id === form.profileId) || null;
-  const selectorProfiles = profiles.filter((profile) => profile.status === "active" && (selectedSite === "Todas" || profile.site === selectedSite));
+
 
   return <div className="formation-shell"><a className="skip-link" href="#main-content">Saltar al contenido principal</a>
     {menuOpen && <button className="formation-scrim" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
@@ -1093,9 +1110,9 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     <section className="formation-workspace" inert={menuOpen}><header className="formation-topbar">
       <button className="mobile-menu" aria-label="Abrir menú" aria-expanded={menuOpen} aria-controls="platform-navigation" onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
       <div className="topbar-context"><span>{settings.pageName}</span><strong>{active}</strong></div>
-      {canViewChildren && <div className="topbar-profile-filters" aria-label="Contexto clínico"><Search size={16}/><label><span className="sr-only">Sede</span><select value={selectedSite} onChange={(event) => { const next = event.target.value; setSelectedSite(next); if (selectedProfile && next !== "Todas" && selectedProfile.site !== next) setSelectedProfileId("all"); setScreen(null); }}><option value="Todas">Todas las sedes</option>{activeSiteNames.map((site) => <option value={site} key={site}>{site}</option>)}</select></label><label><span className="sr-only">Niño</span><select value={selectorProfiles.some((profile) => profile.id === selectedProfileId) ? selectedProfileId : "all"} onChange={(event) => chooseProfile(event.target.value)}><option value="all">{selectedSite === "Todas" ? "Todos los niños" : `Todos · ${selectedSite}`}</option>{selectorProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName}</option>)}</select></label></div>}
+
       <div className="topbar-actions"><span className="topbar-date"><CalendarDays size={15}/>{new Date().toLocaleDateString("es-NI", { day: "2-digit", month: "short" })}</span>{selectedProfile && canRecordABC && <button className="topbar-abc" title={`Registrar ABC · ${selectedProfile.fullName}`} aria-label={`Registrar ABC para ${selectedProfile.fullName}`} onClick={() => setAbcQuickContext({ profileId: selectedProfile.id, profileName: selectedProfile.fullName })}><ListTree size={18}/><span>ABC</span></button>}{(can("calendar.view") || can("calendar.manage")) && <button title="Calendario" aria-label="Abrir calendario" onClick={() => { setActive("Calendario"); setScreen(null); }}><CalendarDays size={18}/></button>}<button title="CIE Nexus Formación" aria-label="Abrir CIE Nexus Formación" onClick={() => window.location.assign("/formacion")}><CircleHelp size={19}/></button><button className="topbar-avatar-button" title={account.displayName} aria-label={`Configuración de ${account.displayName}`} onClick={() => { setActive("Configuración"); setScreen(null); }}><ProfilePhoto name={account.displayName} src={accountPhotoUrl} avatarClassName="topbar-avatar"/></button></div>
-    </header><main id="main-content" tabIndex={-1} className={`formation-content ${screen ? "work-mode" : ""}`}>{mainContent}</main></section>
+    </header><main id="main-content" tabIndex={-1} className={`formation-content ${screen ? "work-mode" : ""}`}>{canViewChildren && (screen || ["Inicio", "Calendario", "Niños", "Programas", "Sesiones", "Gráficas", "Registro ABC", "Informes", "Evaluaciones", "Enseñanza", "Reevaluaciones", "Comparación", "Archivo"].includes(active)) && <ClinicalScopeControls profiles={profiles} sites={activeSiteNames} filter={clinicalFilter} onSiteChange={chooseSite} onProfileChange={chooseProfile} onClear={clearClinicalFilter}/>} {mainContent}</main></section>
     {todaySession && canRecordSessions && <TodaySessionLauncher key={`${todaySession.profileId}:${todaySession.appointmentId || "today"}`} {...todaySession} notify={flash} onExit={() => setTodaySession(null)} onFinished={() => { setTodaySessionRevision((current) => current + 1); refreshProfiles().catch((error: Error) => flash(error.message)); }}/>}
     <ToastNotice message={message}/>
     {abcQuickContext && <ABCQuickCapture context={abcQuickContext} onClose={() => setAbcQuickContext(null)} notify={flash}/>}

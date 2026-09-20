@@ -84,6 +84,8 @@ export default function PersonnelProfileManager({
   linkableAccounts,
   canManage,
   selectedProfileId,
+  selectedSite,
+  onSelectSite,
   onSelect,
   onProfilesChange,
   onOpenPrograms,
@@ -101,6 +103,8 @@ export default function PersonnelProfileManager({
   linkableAccounts: LinkableAccount[];
   canManage: boolean;
   selectedProfileId: string;
+  selectedSite?: string;
+  onSelectSite?: (site: string) => void;
   onSelect: (id: string) => void;
   onProfilesChange: (profiles: PersonnelProfile[]) => void;
   onOpenPrograms: () => void;
@@ -114,7 +118,9 @@ export default function PersonnelProfileManager({
   notify: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [site, setSite] = useState("Todas");
+  const [localSite, setLocalSite] = useState("Todas");
+  const site = selectedSite ?? localSite;
+  const setSite = onSelectSite || setLocalSite;
   const [showArchived, setShowArchived] = useState(false);
   const [draft, setDraft] = useState<ChildDraft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -208,7 +214,7 @@ export default function PersonnelProfileManager({
   }
 
   const roleOptions = (role: AppRole) => linkableAccounts.filter((item) => item.role === role);
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) || null;
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId && (site === "Todas" || profile.site === site)) || null;
 
   return <>
     {selectedProfile ? <ChildProfileWorkspace key={selectedProfile.id} profile={selectedProfile} canManage={canManage} onBack={() => onSelect("all")} onEdit={() => openEdit(selectedProfile)} onOpenEvaluations={onOpenEvaluations} onOpenPrograms={onOpenPrograms} onOpenSessions={onOpenSessions} onStartTodaySession={onStartTodaySession} onOpenGraphs={onOpenGraphs} onOpenProgramGraph={onOpenProgramGraph} onOpenABC={onOpenABC} onOpenReports={onOpenReports} onPhotoChange={(photoUrl) => onProfilesChange(profiles.map((item) => item.id === selectedProfile.id ? { ...item, photoUrl } : item))} notify={notify}/> : <>

@@ -12,6 +12,9 @@ import {
 } from "../../../lib/calendar-appointments";
 import { appointmentRestoreAvailabilitySql, noAppointmentClinicalEvidenceSql } from "../../../lib/calendar-database-guards";
 import { apiAccountGuard, canAccessChild, hasPermission, ROLE_ORDER, type AppRole } from "../../../lib/access-control";
+import { readClinicalFilter, upcomingCalendarPeriod } from "../../../lib/clinical-filter";
+import { calendarProfileIds, matchesSubmittedClinicalFilter } from "../../../lib/calendar-scope";
+import { collectionDateTime } from "../../../lib/mobile-collection";
 import { MEETING_BLOCKING_STATUSES } from "../../../lib/meetings";
 import { canClinicalProfessionalServeChild } from "../../../lib/resource-scope";
 import { isActiveSite } from "../../../lib/sites";
@@ -93,15 +96,16 @@ async function hasAppointmentEvidence(appointment: typeof sessionAppointments.$i
   return (await appointmentEvidenceIds([appointment])).has(appointment.id);
 }
 
-async function serializeRows(rows: Array<typeof sessionAppointments.$inferSelect>, account: NonNullable<Awaited<ReturnType<typeof apiAccountGuard>>["account"]>) {
+async function serializeRows(rows: Array<typeof sessionAppointments.$inferSelect>, account: NonNullable<Awaited<ReturnType<typeof apiAccountGuard>>["account"]>, catalog?: Awaited<ReturnType<typeof clinicalProfessionalCatalog>>) {
   const db = await getDb();
   const profiles = rows.length ? await db.select({ id: personnelProfiles.id, fullName: personnelProfiles.fullName, site: personnelProfiles.site, status: personnelProfiles.status }).from(personnelProfiles) : [];
-  const [professionals, evidenceIds] = await Promise.all([clinicalProfessionalCatalog(), appointmentEvidenceIds(rows)]);
+  const [professionals, evidenceIds] = await Promise.all([catalog || clinicalProfessionalCatalog(), appointmentEvidenceIds(rows)]);
   const profileMap = new Map(profiles.map((profile) => [profile.id, profile]));
   const professionalMap = new Map(professionals.map((professional) => [professional.id, professional]));
   return rows.map((row) => ({
     ...row,
     profileName: profileMap.get(row.profileId)?.fullName || "Niño no disponible",
+    profileSite: profileMap.get(row.profileId)?.site || row.site,
     professionalName: professionalMap.get(row.professionalAccountId)?.displayName || "Profesional no disponible",
     professionalRole: professionalMap.get(row.professionalAccountId)?.role || null,
     canStart: row.professionalAccountId === account.id && (hasPermission(account, "sessions.record") || hasPermission(account, "sessions.manage")),
@@ -149,18 +153,33 @@ export async function GET(request: Request) {
     const requestedTo = dateValue(url.searchParams.get("to")) || dayShift(today, 60);
     const maxTo = dayShift(new Date(`${from}T00:00:00Z`), 180);
     const to = requestedTo > maxTo ? maxTo : requestedTo;
-    const mineOnly = url.searchParams.get("mine") === "1";
+    const mineOnly = url.searchParams.get("mine") === "1" || account.role === "terapeuta";
+    const filter = readClinicalFilter(url.searchParams);
+    const includeUpcoming = url.searchParams.get("upcoming") === "1";
+    const upcomingPeriod = upcomingCalendarPeriod(collectionDateTime(new Date()).date);
     const db = await getDb();
-    const rows = await db.select().from(sessionAppointments)
-      .where(and(gte(sessionAppointments.sessionDate, from), lte(sessionAppointments.sessionDate, to)))
-      .orderBy(asc(sessionAppointments.sessionDate), asc(sessionAppointments.startTime));
-    const visible: Array<typeof sessionAppointments.$inferSelect> = [];
-    for (const row of rows) if ((!mineOnly || row.professionalAccountId === account.id) && await appointmentView(account, row)) visible.push(row);
+    const profiles = await db.select({ id: personnelProfiles.id, site: personnelProfiles.site }).from(personnelProfiles);
+    // View filters only narrow the existing server-authorized scope.
+    const allowedIds = calendarProfileIds(account, profiles, filter);
+    const rows = allowedIds.length ? await db.select().from(sessionAppointments)
+      .where(and(
+        inArray(sessionAppointments.profileId, allowedIds),
+        mineOnly ? eq(sessionAppointments.professionalAccountId, account.id) : undefined,
+        or(
+          and(gte(sessionAppointments.sessionDate, from), lte(sessionAppointments.sessionDate, to)),
+          includeUpcoming ? and(gte(sessionAppointments.sessionDate, upcomingPeriod.from), lte(sessionAppointments.sessionDate, upcomingPeriod.to), inArray(sessionAppointments.status, ["scheduled", "in_progress"])) : undefined,
+        ),
+      )).orderBy(asc(sessionAppointments.sessionDate), asc(sessionAppointments.startTime), asc(sessionAppointments.id)) : [];
     const canManage = hasPermission(account, "calendar.manage");
+    const catalog = rows.length || canManage ? await clinicalProfessionalCatalog() : [];
+    const serialized = await serializeRows(rows, account, catalog);
+    const allowedSet = new Set(allowedIds);
     return Response.json({
-      appointments: await serializeRows(visible, account),
-      professionals: canManage ? await clinicalProfessionalCatalog() : [],
+      appointments: serialized.filter((row) => row.sessionDate >= from && row.sessionDate <= to),
+      ...(includeUpcoming ? { upcomingAppointments: serialized.filter((row) => row.sessionDate >= upcomingPeriod.from && row.sessionDate <= upcomingPeriod.to && (row.status === "scheduled" || row.status === "in_progress")), upcomingPeriod } : {}),
+      professionals: canManage ? catalog.map((professional) => ({ ...professional, eligibleProfileIds: professional.eligibleProfileIds.filter((id) => allowedSet.has(id)) })).filter((professional) => professional.eligibleProfileIds.length) : [],
       canManage,
+      filter,
     });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "No se pudo cargar el calendario." }, { status: 500 });
@@ -184,6 +203,7 @@ export async function POST(request: Request) {
     const db = await getDb();
     const [profile] = await db.select().from(personnelProfiles).where(eq(personnelProfiles.id, profileId)).limit(1);
     if (!profile || profile.status !== "active" || !canAccessChild(account, profile)) return Response.json({ error: "El niño no está dentro de tu alcance." }, { status: 403 });
+    if (!matchesSubmittedClinicalFilter(profile, body.viewFilter)) return Response.json({ error: "El niño está fuera del filtro activo. Revisa sede y niño antes de programar." }, { status: 409 });
     if (!(await isActiveSite(profile.site))) return Response.json({ error: "La sede del niño no está activa." }, { status: 409 });
     await validateProfessional(professionalAccountId, profileId);
     await ensureNoOverlap(professionalAccountId, sessionDate, startTime, endTime);
@@ -297,6 +317,7 @@ export async function PUT(request: Request) {
     if (!profileId || !professionalAccountId || !sessionDate || !startTime || !endTime || endTime <= startTime) return Response.json({ error: "Completa un horario válido." }, { status: 400 });
     const [profile] = await db.select().from(personnelProfiles).where(eq(personnelProfiles.id, profileId)).limit(1);
     if (!profile || profile.status !== "active" || !canAccessChild(account, profile)) return Response.json({ error: "El niño no está dentro de tu alcance." }, { status: 403 });
+    if (!matchesSubmittedClinicalFilter(profile, body.viewFilter)) return Response.json({ error: "El niño está fuera del filtro activo. Revisa sede y niño antes de programar." }, { status: 409 });
     if (!(await isActiveSite(profile.site))) return Response.json({ error: "La sede del niño no está activa." }, { status: 409 });
     await validateProfessional(professionalAccountId, profileId);
     if (current.status === "scheduled") await ensureNoOverlap(professionalAccountId, sessionDate, startTime, endTime, id);
