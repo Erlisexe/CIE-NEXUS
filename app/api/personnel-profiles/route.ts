@@ -11,6 +11,7 @@ import {
   trainingCycles,
 } from "../../../db/schema";
 import { isActiveSite } from "../../../lib/sites";
+import { summarizeClosedSessions } from "../../../lib/clinical-session-runs";
 
 type Bucket = { delete(key: string): Promise<void> };
 
@@ -108,7 +109,7 @@ export async function GET() {
       db.select().from(personnelProfiles).orderBy(asc(personnelProfiles.site), asc(personnelProfiles.fullName)),
       db.select({ id: trainingCycles.id, profileId: trainingCycles.profileId }).from(trainingCycles),
       db.select({ id: interventionPrograms.id, profileId: interventionPrograms.profileId }).from(interventionPrograms),
-      db.select({ id: interventionSessions.id, programId: interventionSessions.programId }).from(interventionSessions),
+      db.select({ id: interventionSessions.id, programId: interventionSessions.programId, clinicalSessionRunId: interventionSessions.clinicalSessionRunId, status: interventionSessions.status }).from(interventionSessions).where(eq(interventionSessions.status, "closed")),
     ]);
     const programOwner = new Map(programs.map((program) => [program.id, program.profileId]));
     const allowedIds = visibleProfileIds(account, profiles);
@@ -130,11 +131,13 @@ export async function GET() {
     return Response.json({
       profiles: visibleProfiles.map((profile) => {
         const linked = assignments.filter((item) => item.profile_id === profile.id).map((item) => accountById.get(item.account_id)).filter(Boolean);
+        const activity = summarizeClosedSessions(sessions.filter((session) => programOwner.get(session.programId) === profile.id));
         return {
           ...serializeProfile(profile),
           evaluationCount: cycles.filter((cycle) => cycle.profileId === profile.id).length,
           programCount: programs.filter((program) => program.profileId === profile.id).length,
-          sessionCount: sessions.filter((session) => programOwner.get(session.programId) === profile.id).length,
+          sessionCount: activity.sessionCount,
+          programRecordCount: activity.programRecordCount,
           responsibleAccountIds: {
             coordinador: linked.find((item) => item?.role === "coordinador")?.id || null,
             supervisor: linked.find((item) => item?.role === "supervisor")?.id || null,
@@ -184,7 +187,7 @@ export async function POST(request: Request) {
       customFields: customFieldsValue(body.customFields),
       notes: textValue(body.notes),
     }).returning();
-    return Response.json({ profile: { ...serializeProfile(profile), evaluationCount: 0, programCount: 0, sessionCount: 0, responsibleAccountIds: responsibleIds(body.responsibleAccountIds) } }, { status: 201 });
+    return Response.json({ profile: { ...serializeProfile(profile), evaluationCount: 0, programCount: 0, sessionCount: 0, programRecordCount: 0, responsibleAccountIds: responsibleIds(body.responsibleAccountIds) } }, { status: 201 });
   } catch (error) {
     await replaceResponsibles(id, {}).catch(() => undefined);
     return Response.json({ error: errorMessage(error) }, { status: 500 });

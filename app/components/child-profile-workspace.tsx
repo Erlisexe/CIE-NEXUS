@@ -2,6 +2,7 @@
 
 import { clientRequest } from "../../lib/client-request";
 import { StartTodaySessionButton } from "./today-session-launcher";
+import { summarizeClosedSessions } from "../../lib/clinical-session-runs";
 
 import {
   Activity,
@@ -62,7 +63,7 @@ type Profile = {
 type Evaluation = { id: string; programContext: string; cycleLabel: string; instrumentVersion: string; routeType: string; status: string; archivedAt: string | null; updatedAt: string };
 type Target = { id: string; code: string; name: string; specificObjective: string; state: string; measurement: string; unitLabel: string };
 type Program = { id: string; name: string; objective: string; instructions: string; status: string; updatedAt: string; targets: Target[]; graphConfig?: { graphType?: string; designType?: string; primaryTargetId?: string | null } };
-type Session = { id: string; programId: string; programName: string; sessionDate: string; context: string; notes: string; status: string; results: unknown[]; professionalName?: string; durationMinutes?: number | null };
+type Session = { id: string; clinicalSessionRunId?: string | null; programId: string; programName: string; sessionDate: string; context: string; notes: string; status: string; results: unknown[]; professionalName?: string; durationMinutes?: number | null };
 type Graph = { id: string; title: string; objective: string; graphType: string; designType: string; measurement: string; status: string; pointCount: number; updatedAt: string; linkedProgramId: string | null; programName: string };
 type Report = { id: string; title: string; reportType: string; status: "draft" | "finalized"; authorName: string; finalizedAt: string | null; updatedAt: string };
 type Document = { id: string; fileName: string; contentType: string; sizeBytes: number; description: string; createdAt: string };
@@ -200,16 +201,17 @@ export default function ChildProfileWorkspace({
 
   const child = data?.profile || profile;
   const age = ageFrom(child.dateOfBirth);
+  const sessionSummary = useMemo(() => summarizeClosedSessions(data?.sessions || []), [data]);
   const counts = useMemo(() => ({
     evaluations: data?.evaluations.length || 0,
     programs: data?.programs.length || 0,
-    sessions: data?.sessions.length || 0,
+    sessions: sessionSummary.sessionCount,
     graphs: data?.graphs.length || 0,
     abc: data?.abcRecords.length || 0,
     reports: data?.reports.length || 0,
     documents: data?.documents.length || 0,
     "service-plan": data?.programs.filter((program) => program.status === "active").length || 0,
-  }), [data]);
+  }), [data, sessionSummary.sessionCount]);
 
   const permitted = (key: SectionKey) => {
     if (!data || key === "overview" || key === "general" || key === "documents") return true;
@@ -221,7 +223,7 @@ export default function ChildProfileWorkspace({
     { key: "general", label: "Datos generales", description: "Identificación, contacto y responsables", Icon: UserRound },
     { key: "evaluations", label: "Evaluaciones", description: "Líneas base, progreso y reevaluaciones", Icon: ClipboardList },
     { key: "programs", label: "Programas", description: "Intervenciones y objetivos activos", Icon: BookOpenCheck },
-    { key: "sessions", label: "Sesiones", description: "Registro cronológico de atención", Icon: CalendarDays },
+    { key: "sessions", label: "Sesiones", description: "Encuentros cerrados y programas trabajados", Icon: CalendarDays },
     { key: "graphs", label: "Gráficas", description: "Evolución visual de los datos", Icon: BarChart3 },
     { key: "abc", label: "Registro ABC", description: "Observaciones descriptivas A-B-C", Icon: ListTree },
     { key: "reports", label: "Informes", description: "Borradores y documentos finalizados", Icon: FileText },
@@ -308,7 +310,10 @@ export default function ChildProfileWorkspace({
 
     if (section === "programs") return <section className="child-section-card"><header><div><p className="section-kicker">Intervención</p><h2>Programas</h2></div><button className="primary-formation-button" onClick={onOpenPrograms}>Gestionar programas</button></header>{data.programs.length ? <div className="child-program-list">{data.programs.map((program) => <article key={program.id}><div><span><BookOpenCheck size={19}/></span><div><strong>{program.name}</strong><p>{program.objective}</p></div></div><footer><span className="child-status">{statusLabel(program.status)}</span><small>{program.targets.length} objetivo{program.targets.length === 1 ? "" : "s"} específico{program.targets.length === 1 ? "" : "s"}</small><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : program.graphConfig?.graphType === "bar" ? "Barras" : "Línea"} · por programa</small><button className="child-inline-action" onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={15}/> Ver gráfica</button></footer></article>)}</div> : <EmptySection title="Sin programas" text="Crea o vincula un programa para comenzar el plan de intervención."/>}</section>;
 
-    if (section === "sessions") return <section className="child-section-card"><header><div><p className="section-kicker">Atención e historial</p><h2>Sesiones</h2></div><div className="child-session-actions">{profile.status === "active" && onStartTodaySession && <StartTodaySessionButton onClick={() => onStartTodaySession(profile.id)}/>}<button className="secondary-formation-button" onClick={onOpenSessions}>Ver historial completo</button></div></header>{data.sessions.length ? <div className="child-record-list">{data.sessions.map((session) => <article key={session.id}><span className="record-symbol"><CalendarDays size={19}/></span><div><strong>{session.programName}</strong><p>{session.professionalName || "Profesional no registrado"}{session.durationMinutes ? ` · ${session.durationMinutes} min` : ""}{session.context ? ` · ${session.context}` : ""}{session.notes ? ` · ${session.notes}` : ""}</p></div><span className="child-status">{statusLabel(session.status)}</span><small>{formatDate(session.sessionDate)}</small></article>)}</div> : <EmptySection title="Sin sesiones finalizadas" text="Las sesiones cerradas de este niño aparecerán aquí como historial clínico."/>}</section>;
+    if (section === "sessions") return <section className="child-section-card"><header><div><p className="section-kicker">Atención e historial</p><h2>Sesiones</h2><p className="clinical-session-counts">Encuentros cerrados: {sessionSummary.sessionCount} · Registros por programa: {sessionSummary.programRecordCount}</p></div><div className="child-session-actions">{profile.status === "active" && onStartTodaySession && <StartTodaySessionButton onClick={() => onStartTodaySession(profile.id)}/>}<button className="secondary-formation-button" onClick={onOpenSessions}>Ver historial completo</button></div></header>{sessionSummary.groups.length ? <div className="child-record-list">{sessionSummary.groups.map((group) => {
+      const session = group.rows[0];
+      return <article className="child-session-encounter" key={group.id}><span className="record-symbol"><CalendarDays size={19}/></span><div><strong>Sesión cerrada</strong><p>{session.professionalName || "Profesional no registrado"}{session.durationMinutes ? ` · ${session.durationMinutes} min` : ""}{session.context ? ` · ${session.context}` : ""}</p></div><span className="child-status">Cerrada</span><small>{formatDate(session.sessionDate)}</small><details className="child-session-programs"><summary>{group.rows.length} registro{group.rows.length === 1 ? "" : "s"} por programa</summary>{group.rows.map((record) => <div key={record.id}><strong>{record.programName}</strong>{record.notes && <p>{record.notes}</p>}</div>)}</details></article>;
+    })}</div> : <EmptySection title="Sin sesiones finalizadas" text="Las sesiones cerradas de este niño aparecerán aquí como historial clínico."/>}</section>;
 
     if (section === "graphs") return <section className="child-section-card"><header><div><p className="section-kicker">Visualización clínica</p><h2>Gráficas por programa</h2><p>La portada de cada programa usa sus sesiones y eventos de dominio; los targets permanecen en una vista secundaria.</p></div><button className="primary-formation-button" onClick={onOpenGraphs}>Abrir gráficas</button></header>{data.programs.length > 0 && <div className="program-graph-shortcuts">{data.programs.map((program) => <button key={program.id} onClick={() => onOpenProgramGraph(program.id)}><BarChart3 size={18}/><span><strong>{program.name}</strong><small>{program.graphConfig?.graphType === "cumulative" ? "Acumulativa" : program.graphConfig?.graphType === "bar" ? "Barras" : "Línea"} · programa completo</small></span><ChevronRight size={16}/></button>)}</div>}{data.capabilities.abc && <button className="child-inline-action" onClick={onOpenABC}><ListTree size={15}/> Abrir análisis ABC</button>}{data.graphs.length ? <div className="child-record-list">{data.graphs.map((graph) => <article key={graph.id}><span className="record-symbol"><BarChart3 size={19}/></span><div><strong>{graph.title}</strong><p>{graph.designType} · {graph.measurement} · {graph.pointCount} puntos{graph.programName ? ` · ${graph.programName}` : ""}</p></div><span className="child-status">{statusLabel(graph.status)}</span><small>{formatDate(graph.updatedAt)}</small></article>)}</div> : data.programs.length === 0 && <EmptySection title="Sin gráficas vinculadas" text="Las gráficas se mostrarán cuando el niño tenga programas o visualizaciones manuales vinculadas."/>}</section>;
 

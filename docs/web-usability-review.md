@@ -57,3 +57,16 @@ Verificación: **107/107 pruebas**, TypeScript, ESLint y build de Worker aprobad
 Navegador con componentes reales y datos sintéticos (`tests/ui/entry.html?scope`): seis citas sin filtro → dos de Estelí → una del niño; limpiar restaura seis; Inicio y Calendario coinciden; la programación ofrece/envía sólo el niño seleccionado; el directorio comparte la sede; cambiar rápidamente de Estelí a León ignora la respuesta tardía; navegar al mes siguiente conserva próximas terapias. En `scope-mobile.html` (390 × 844), los selectores y limpiar miden 44 px de alto, el documento no desborda horizontalmente y el formulario abre/cierra con opciones coherentes.
 
 No se escribieron datos reales ni se cambiaron esquema D1, autenticación, asignaciones, reglas clínicas o APK. La validación de navegador usa respuestas en memoria; falta aceptación autenticada con cuentas reales por rol y teléfono físico. No se declara certificación de accesibilidad.
+
+## Sesiones = encuentros cerrados — continuación sobre Site v50
+
+La lectura del Site confirmó cinco filas cerradas en `intervention_sessions`, vinculadas a cuatro identificadores de encuentro. Inicio, directorio y expediente contaban las filas por programa, mientras el historial completo ya agrupaba encuentros.
+
+- `summarizeClosedSessions` comparte la definición entre servidor y vistas: sólo registros cerrados, agrupados por `clinicalSessionRunId`. Los registros antiguos sin ese vínculo cuentan individualmente; no se fusionan por fecha, nombre ni profesional.
+- `sessionCount` en la API de perfiles ahora cuenta encuentros cerrados y se añade `programRecordCount`. Inicio utiliza esos totales completos, sin el límite de la lista reciente. Su actividad reciente muestra un elemento por encuentro.
+- La tarjeta del niño y el resumen del expediente muestran encuentros. La pestaña Sesiones presenta una entrada por encuentro y permite desplegar sus registros por programa, conservando nombres y notas. Expediente e historial distinguen explícitamente ambos totales.
+- Los programas archivados siguen aportando sus encuentros al historial. Borradores, citas programadas, canceladas y sesiones en curso no incrementan el contador de encuentros cerrados. Los listados por programa usan la etiqueta «registros por programa».
+
+Validación: **111/111 pruebas aprobadas**, TypeScript, ESLint y build del Worker. Las cuatro regresiones nuevas cubren 5 registros → 4 encuentros, estados no cerrados, identidades diferentes en una misma fecha y un historial mayor de 500 registros que incluye programas archivados. Se comprobó en navegador la tarjeta, el resumen, las cuatro entradas del expediente y del historial completo, y la expansión de Comunicación funcional/Social con notas conservadas usando datos ficticios (`entry.html?encounters`, `encounters-mobile.html`). En teléfono de 390 × 844, sin desbordamiento horizontal; contador de 14 px y control desplegable de 45 px, operable por teclado.
+
+Esta corrección cambia conteos y presentación, sin escribir datos clínicos, modificar cierres, permisos, esquema, gráficas o APK. No se recorrió el sistema publicado con cuentas reales por rol; el navegador usa las interfaces reales con respuestas sintéticas.

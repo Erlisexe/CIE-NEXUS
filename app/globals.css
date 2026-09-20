@@ -540,3 +540,14 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .clinical-scope-controls>p>span{display:block;color:#526a78;font-size:.8125rem}
 .calendar-upcoming-period{margin:4px 0 0;font-size:.875rem;color:#526a78}
 @media(max-width:560px){.clinical-scope-controls{padding:12px}.clinical-scope-fields{gap:8px}.clinical-scope-fields label{flex-basis:100%}.clinical-scope-fields>button{width:100%}.clinical-scope-controls>p>span{display:none}}
+
+/* One encounter in the dossier; its program records remain expandable. */
+.child-session-programs{grid-column:1/-1;width:100%;min-width:0;border-top:1px solid #dce6ed}
+.child-session-programs summary{padding:12px 4px;min-height:44px;cursor:pointer;font-size:.875rem;font-weight:700;color:#0062a6}
+.child-session-programs summary:focus-visible{outline:2px solid #0080d8;outline-offset:2px;border-radius:4px}
+.child-session-programs>div{padding:10px 4px;border-top:1px solid #edf2f5;overflow-wrap:anywhere}
+.child-session-programs>div>strong{font-size:.875rem}
+.child-session-programs>div>p{white-space:pre-wrap;font-size:.875rem;line-height:1.5;margin:6px 0 0}
+.child-record-list .child-session-encounter>div>strong,.child-record-list .child-session-encounter>div>p{font-size:.875rem;line-height:1.45}
+.child-record-list .child-session-encounter>small,.child-record-list .child-session-encounter>.child-status{font-size:.75rem}
+.child-section-card>header>div>p.clinical-session-counts,.recent-sessions-panel .clinical-session-counts{font-size:.875rem;line-height:1.5;margin:6px 0 0;color:#486171}

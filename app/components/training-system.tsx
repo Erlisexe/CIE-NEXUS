@@ -58,6 +58,7 @@ import GraphManager from "./graph-manager";
 import InterventionSessionManager from "./intervention-session-manager";
 import TodaySessionLauncher from "./today-session-launcher";
 import ClinicalScopeControls from "./clinical-scope-controls";
+import { summarizeClosedSessions } from "../../lib/clinical-session-runs";
 import { matchesClinicalFilter, profileMatchesClinicalFilter } from "../../lib/clinical-filter";
 import PersonnelProfileManager, { type LinkableAccount, type PersonnelProfile } from "./personnel-profile-manager";
 import FormationManager from "./formation-manager";
@@ -177,6 +178,8 @@ type DashboardProgram = {
 
 type DashboardSession = {
   id: string;
+  clinicalSessionRunId?: string | null;
+  status: string;
   programId: string;
   sessionDate: string;
   context: string;
@@ -848,9 +851,14 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   }
 
   function renderOverview() {
-    const scopedPrograms = dashboardPrograms.filter((program) => program.status === "active" && matchesClinicalFilter({ ...program, site: profiles.find((profile) => profile.id === program.profileId)?.site || program.site }, clinicalFilter));
-    const scopedProgramIds = new Set(scopedPrograms.map((program) => program.id));
+    const scopedAllPrograms = dashboardPrograms.filter((program) => matchesClinicalFilter({ ...program, site: profiles.find((profile) => profile.id === program.profileId)?.site || program.site }, clinicalFilter));
+    const scopedPrograms = scopedAllPrograms.filter((program) => program.status === "active");
+    const scopedProgramIds = new Set(scopedAllPrograms.map((program) => program.id));
     const scopedSessions = dashboardSessions.filter((session) => scopedProgramIds.has(session.programId));
+    const recentSessionGroups = summarizeClosedSessions(scopedSessions).groups;
+    // Exact totals come from the same uncapped counts as the child directory.
+    const sessionCount = clinicalProfiles.reduce((sum, profile) => sum + (profile.sessionCount || 0), 0);
+    const programRecordCount = clinicalProfiles.reduce((sum, profile) => sum + (profile.programRecordCount || 0), 0);
     const openTargets = scopedPrograms.flatMap((program) => program.targets).filter((target) => target.state !== "closed").length;
     const activeChildren = clinicalProfiles.filter((profile) => profile.status === "active");
     const activeSites = activeSiteNames.length;
@@ -862,7 +870,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     const tasks = evaluationTasks.slice(0, 6);
     const recentActivity = [
       ...activeRecords.map((record) => ({ id: `cycle-${record.id}`, date: record.updatedAt, icon: ClipboardCheck, title: statusLabel(record.status), detail: `${record.participantName} · ${record.programContext}` })),
-      ...scopedSessions.map((session) => { const program = scopedPrograms.find((item) => item.id === session.programId); return { id: `session-${session.id}`, date: session.createdAt || session.sessionDate, icon: Clock3, title: "Sesión cerrada", detail: `${program?.participantName || "Niño"} · ${program?.name || session.context}` }; }),
+      ...recentSessionGroups.map((group) => { const session = group.rows[0]; const program = scopedAllPrograms.find((item) => item.id === session.programId); return { id: `session-${group.id}`, date: session.createdAt || session.sessionDate, icon: Clock3, title: "Sesión cerrada", detail: `${program?.participantName || "Niño"} · ${group.rows.length} registro${group.rows.length === 1 ? "" : "s"} por programa` }; }),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5);
     const contextName = selectedProfile ? selectedProfile.fullName : selectedSite !== "Todas" ? `Sede ${selectedSite}` : "Vista institucional";
     const contextDetail = selectedProfile ? `Niño · ${selectedProfile.site}` : selectedSite !== "Todas" ? `${profiles.filter((profile) => profile.site === selectedSite && profile.status === "active").length} niños activos` : activeSiteNames.join(" · ") || "Sin sedes activas";
@@ -879,7 +887,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
       <section className="cie-stat-grid" aria-label="Indicadores principales">
         <article className="blue"><span><UsersRound size={23}/></span><div><small>Niños activos</small><strong>{activeChildren.length}</strong><p>Expedientes visibles</p></div></article>
         <article className="yellow"><span><BookOpenCheck size={23}/></span><div><small>Programas</small><strong>{scopedPrograms.length}</strong><p>En intervención</p></div></article>
-        <article className="red"><span><Clock3 size={23}/></span><div><small>Sesiones</small><strong>{scopedSessions.length}</strong><p>En la selección</p></div></article>
+        <article className="red"><span><Clock3 size={23}/></span><div><small>Sesiones cerradas</small><strong>{sessionCount}</strong><p>{programRecordCount} registros por programa</p></div></article>
         <article className="blue-soft"><span><Target size={23}/></span><div><small>Targets abiertos</small><strong>{openTargets}</strong><p>Pendientes de cierre</p></div></article>
         <article className="yellow-soft"><span><ClipboardCheck size={23}/></span><div><small>Evaluaciones</small><strong>{activeRecords.length}</strong><p>{reevaluationCount} en reevaluación</p></div></article>
         <article className="red-soft"><span><Building2 size={23}/></span><div><small>Sedes activas</small><strong>{activeSites}</strong><p>Directorio institucional</p></div></article>

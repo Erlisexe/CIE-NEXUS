@@ -60,6 +60,7 @@ export type PersonnelProfile = {
   evaluationCount: number;
   programCount: number;
   sessionCount: number;
+  programRecordCount?: number;
   responsibleAccountIds?: ResponsibleAccountIds;
   responsibles?: LinkableAccount[];
   createdAt: string;
