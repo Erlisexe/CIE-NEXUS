@@ -43,6 +43,7 @@ import type { CollectionDraft, CollectionPreparation } from "../../lib/mobile-co
 import { DEFAULT_SESSION_NOTE_TEMPLATE, type SessionNoteField } from "../../lib/session-note-templates";
 import { summarizeClosedSessions, programsForClinicalSession } from "../../lib/clinical-session-runs";
 import { targetStateLabel } from "../../lib/clinical-mastery";
+import { programDraftStorageKey, programFormSnapshot, readProgramDraft, removeProgramDraft, writeProgramDraft } from "../../lib/program-drafts";
 
 const STATE_ORDER = ["baseline", "acquisition", "generalization", "maintenance", "closed"] as const;
 type TargetState = typeof STATE_ORDER[number];
@@ -288,6 +289,7 @@ export default function InterventionSessionManager({
   onOpenProgramGraph,
   onRegisterABC,
   onBackToProfile,
+  draftOwnerId,
 }: {
   mode: "programs" | "sessions";
   cycles: CycleOption[];
@@ -308,6 +310,7 @@ export default function InterventionSessionManager({
   onOpenProgramGraph?: (programId: string) => void;
   onRegisterABC?: (context: { profileId: string; profileName: string; programId: string; appointmentId: string | null }) => void;
   onBackToProfile?: () => void;
+  draftOwnerId: string;
 }) {
   const [programs, setPrograms] = useState<InterventionProgram[]>([]);
   const [sessions, setSessions] = useState<InterventionSession[]>([]);
@@ -318,6 +321,12 @@ export default function InterventionSessionManager({
   const [saving, setSaving] = useState(false);
   const [programModal, setProgramModal] = useState(false);
   const [form, setForm] = useState<ProgramForm>(blankProgram());
+  const [programOriginalSnapshot, setProgramOriginalSnapshot] = useState("");
+  const [programDraftKey, setProgramDraftKey] = useState("");
+  const [programDraftSourceUpdatedAt, setProgramDraftSourceUpdatedAt] = useState<string | null>(null);
+  const [programDraftSavedAt, setProgramDraftSavedAt] = useState("");
+  const [programDraftRecovered, setProgramDraftRecovered] = useState(false);
+  const [programDraftError, setProgramDraftError] = useState("");
   const [setupOpen, setSetupOpen] = useState(false);
   const [setup, setSetup] = useState<{ profileId: string; sessionDate: string; context: string; noteTemplateId: string }>({ profileId: "", sessionDate: new Date().toISOString().slice(0, 10), context: "", noteTemplateId: DEFAULT_SESSION_NOTE_TEMPLATE.id });
   const [realSetupOpen, setRealSetupOpen] = useState(false);
@@ -325,6 +334,7 @@ export default function InterventionSessionManager({
   const [realPreparation, setRealPreparation] = useState<CollectionPreparation | null>(null);
   const [realPreparationLoading, setRealPreparationLoading] = useState(false);
   const [realPreparationError, setRealPreparationError] = useState("");
+  const [realStartError, setRealStartError] = useState("");
   const [preparationRevision, setPreparationRevision] = useState(0);
   const [realStarting, setRealStarting] = useState(false);
   const [realSessionDraft, setRealSessionDraft] = useState<CollectionDraft | null>(null);
@@ -347,6 +357,26 @@ export default function InterventionSessionManager({
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState<SessionNoteTemplateDraft | null>(null);
+  const programDirty = Boolean(programModal && programOriginalSnapshot && programFormSnapshot(form) !== programOriginalSnapshot);
+  const programDraftStatus = programDraftError
+    || (programDraftRecovered ? "Borrador local recuperado." : programDirty && programDraftSavedAt
+      ? `Borrador local guardado a las ${new Date(programDraftSavedAt).toLocaleTimeString("es-NI", { hour: "2-digit", minute: "2-digit" })}`
+      : programDirty ? "Guardando borrador local…" : "Sin cambios pendientes.");
+
+  useEffect(() => {
+    if (!programModal || !programDraftKey || !programDirty) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = writeProgramDraft(window.localStorage, programDraftKey, form, programDraftSourceUpdatedAt);
+        setProgramDraftSavedAt(saved.savedAt);
+        setProgramDraftRecovered(false);
+        setProgramDraftError("");
+      } catch {
+        setProgramDraftError("No se pudo guardar el borrador en este dispositivo.");
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [form, programDirty, programDraftKey, programDraftSourceUpdatedAt, programModal]);
 
   useEffect(() => {
     let cancelled = false;
@@ -378,6 +408,7 @@ export default function InterventionSessionManager({
             setRealSetup({ profileId: initialAppointment.profileId, sessionDate: initialAppointment.sessionDate, contextCategory: "", contextOther: "", noteTemplateId: templateData?.templates?.[0]?.id || DEFAULT_SESSION_NOTE_TEMPLATE.id, selectedTargetIds: [] });
             setLinkedAppointmentId(initialAppointment.id);
             setRealPreparationLoading(true);
+            setRealStartError("");
             setRealSetupOpen(true);
             onAppointmentConsumed?.();
           }
@@ -397,7 +428,7 @@ export default function InterventionSessionManager({
     const controller = new AbortController();
     // Loading state belongs to this abortable request, including explicit retries.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRealPreparationLoading(true); setRealPreparationError("");
+    setRealPreparationLoading(true); setRealPreparationError(""); setRealStartError("");
     const query = new URLSearchParams({ profileId: realSetup.profileId });
     if (linkedAppointmentId) query.set("appointmentId", linkedAppointmentId);
     clientRequest(`/api/session-collection?${query.toString()}`, { cache: "no-store", signal: controller.signal })
@@ -471,19 +502,59 @@ export default function InterventionSessionManager({
   const setupPrograms = programsForClinicalSession(programs, setup.profileId);
   const selectedNoteTemplate = noteTemplates.find((template) => template.id === setup.noteTemplateId) || noteTemplates[0] || null;
 
+  function openProgramEditor(base: ProgramForm, sourceUpdatedAt: string | null) {
+    const key = programDraftStorageKey(draftOwnerId, base.id, base.profileId);
+    let restored: ProgramForm | null = null;
+    let savedAt = "";
+    try {
+      const stored = readProgramDraft<ProgramForm>(window.localStorage, key, sourceUpdatedAt);
+      if (stored && stored.form.id === base.id) {
+        restored = stored.form;
+        savedAt = stored.savedAt;
+      } else if (stored) {
+        removeProgramDraft(window.localStorage, key);
+      }
+    } catch {
+      // The editor remains usable when browser storage is unavailable.
+    }
+    setForm(restored ? JSON.parse(JSON.stringify(restored)) as ProgramForm : base);
+    setProgramOriginalSnapshot(programFormSnapshot(base));
+    setProgramDraftKey(key);
+    setProgramDraftSourceUpdatedAt(sourceUpdatedAt);
+    setProgramDraftSavedAt(savedAt);
+    setProgramDraftRecovered(Boolean(restored && programFormSnapshot(restored) !== programFormSnapshot(base)));
+    setProgramDraftError("");
+    setProgramModal(true);
+    if (restored && programFormSnapshot(restored) !== programFormSnapshot(base)) notify("Se recuperó el borrador local de este programa.");
+  }
+
+  function clearCurrentProgramDraft() {
+    if (programDraftKey) {
+      try { removeProgramDraft(window.localStorage, programDraftKey); } catch { /* Closing must still work if storage is unavailable. */ }
+    }
+    setProgramDraftSavedAt("");
+    setProgramDraftRecovered(false);
+    setProgramDraftError("");
+  }
+
+  function closeProgramEditor() {
+    if (saving) return;
+    if (programDirty && !window.confirm("Hay cambios sin guardar en este programa. ¿Quieres descartarlos? El borrador local también se eliminará.")) return;
+    clearCurrentProgramDraft();
+    setProgramModal(false);
+  }
+
   function openNewProgram() {
     const profile = activeProfiles.find((item) => item.id === selectedProfileId) || activeProfiles[0];
     if (!profile) {
       notify("Agrega primero un niño.");
       return;
     }
-    setForm(blankProgram(profile));
-    setProgramModal(true);
+    openProgramEditor(blankProgram(profile), null);
   }
 
   function openEditProgram(program: InterventionProgram) {
-    setForm(JSON.parse(JSON.stringify(program)) as ProgramForm);
-    setProgramModal(true);
+    openProgramEditor(JSON.parse(JSON.stringify(program)) as ProgramForm, program.updatedAt);
   }
 
   function updateTarget(index: number, patch: Partial<TargetDefinition>) {
@@ -531,6 +602,7 @@ export default function InterventionSessionManager({
       }
       if (!response.ok || !data.program) throw new Error(data.error || "No se pudo guardar el programa.");
       setPrograms((current) => form.id ? current.map((program) => program.id === data.program?.id ? data.program : program) as InterventionProgram[] : [data.program as InterventionProgram, ...current]);
+      clearCurrentProgramDraft();
       setProgramModal(false);
       onSelectProfile(data.program.profileId || form.profileId || "all");
       onProfilesRefresh();
@@ -633,7 +705,7 @@ export default function InterventionSessionManager({
     if (!selectedProgram?.profileId) { notify("Selecciona un niño con un programa y targets abiertos."); return; }
     setRealSetup({ profileId: selectedProgram?.profileId || "", sessionDate: institutionalToday, contextCategory: "", contextOther: "", noteTemplateId: noteTemplates[0]?.id || DEFAULT_SESSION_NOTE_TEMPLATE.id, selectedTargetIds: [] });
     setRealPreparation(null);
-    setRealPreparationLoading(true); setRealPreparationError("");
+    setRealPreparationLoading(true); setRealPreparationError(""); setRealStartError("");
     setLinkedAppointmentId(null);
     setRealSetupOpen(true);
     setLastTransitions([]);
@@ -643,7 +715,7 @@ export default function InterventionSessionManager({
     onSelectProfile(appointment.profileId);
     setRealSetup({ profileId: appointment.profileId, sessionDate: appointment.sessionDate, contextCategory: "", contextOther: "", noteTemplateId: noteTemplates[0]?.id || DEFAULT_SESSION_NOTE_TEMPLATE.id, selectedTargetIds: [] });
     setRealPreparation(null);
-    setRealPreparationLoading(true); setRealPreparationError("");
+    setRealPreparationLoading(true); setRealPreparationError(""); setRealStartError("");
     setLinkedAppointmentId(appointment.id);
     setRealSetupOpen(true);
     setLastTransitions([]);
@@ -651,7 +723,7 @@ export default function InterventionSessionManager({
 
   async function startRealSession() {
     if (!realPreparation || realStarting) return;
-    setRealStarting(true);
+    setRealStarting(true); setRealStartError("");
     try {
       const response = await clientRequest("/api/session-collection", {
         method: "POST",
@@ -663,13 +735,16 @@ export default function InterventionSessionManager({
       setRealSessionDraft(body.draft);
       setRealSetupOpen(false);
     } catch (error) {
-      notify(error instanceof Error ? error.message : "No se pudo iniciar la sesión.");
+      const message = error instanceof Error ? error.message : "No se pudo iniciar la sesión.";
+      setRealStartError(message);
+      notify(message);
     } finally { setRealStarting(false); }
   }
 
   function finishRealSession(message: string) {
     setRealSessionDraft(null);
     setRealPreparation(null);
+    setRealStartError("");
     setLinkedAppointmentId(null);
     setReloadRevision((current) => current + 1);
     onProfilesRefresh();
@@ -1062,7 +1137,7 @@ export default function InterventionSessionManager({
           {expanded && <div className="program-target-list">{program.targets.map((target) => <div key={target.id}><span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span><div><strong>{target.code} · {target.name}</strong><p>{target.specificObjective}</p><small>{measurementLabel(target.measurement)} · {criterionText(target)}</small></div></div>)}</div>}
         </article>;
       })}</div> : <div className="intervention-empty"><CircleDashed size={30}/><strong>Aún no hay programas de intervención</strong><p>{canManagePrograms ? "Crea el primero con su objetivo general, targets y criterios por etapa." : "No hay programas asignados a los niños que puedes consultar."}</p>{canManagePrograms && <button className="primary-formation-button" onClick={openNewProgram}><Plus size={16}/> Crear primer programa</button>}</div>}
-      {programModal && <ProgramModal form={form} cycles={cycles} profiles={activeProfiles} saving={saving} onChange={setForm} onTargetChange={updateTarget} onCriterionChange={updateCriterion} onAddTarget={addTarget} onRemoveTarget={removeTarget} onClose={() => setProgramModal(false)} onSave={saveProgram}/>}
+      {programModal && <ProgramModal form={form} cycles={cycles} profiles={activeProfiles} saving={saving} dirty={programDirty} draftStatus={programDraftStatus} onChange={setForm} onTargetChange={updateTarget} onCriterionChange={updateCriterion} onAddTarget={addTarget} onRemoveTarget={removeTarget} onClose={closeProgramEditor} onSave={saveProgram}/>}
     </>;
   }
 
@@ -1087,13 +1162,13 @@ export default function InterventionSessionManager({
     </section>
     <section className="recent-sessions-panel formation-panel"><div className="panel-title"><div><p className="section-kicker">Historial</p><h2>Sesiones cerradas</h2><p className="clinical-session-counts">Encuentros cerrados: {sessionSummary.sessionCount} · Registros por programa: {sessionSummary.programRecordCount}</p></div><Clock3 size={18}/></div>{visibleSessionGroups.length ? <div className="recent-session-list">{visibleSessionGroups.slice(0, 12).map(renderSessionGroup)}</div> : <div className="intervention-empty compact"><Clock3 size={27}/><strong>Aún no hay sesiones cerradas</strong></div>}</section>
 
-    {realSetupOpen && <RealSessionSetup error={realPreparationError} onRetry={() => setPreparationRevision(current => current + 1)} preparation={realPreparation} loading={realPreparationLoading} value={realSetup} starting={realStarting} profileOptions={sessionProfileOptions} onChange={(value) => { if (value.profileId !== realSetup.profileId) { setRealPreparation(null); setRealPreparationLoading(true); } setRealSetup(value); }} onClose={() => { if (realStarting) return; setRealSetupOpen(false); setRealPreparation(null); setRealPreparationLoading(false); setLinkedAppointmentId(null); }} onStart={startRealSession}/>}
+    {realSetupOpen && <RealSessionSetup error={realPreparationError} actionError={realStartError} onRetry={() => { setRealStartError(""); setPreparationRevision(current => current + 1); }} preparation={realPreparation} loading={realPreparationLoading} value={realSetup} starting={realStarting} profileOptions={sessionProfileOptions} onChange={(value) => { setRealStartError(""); if (value.profileId !== realSetup.profileId) { setRealPreparation(null); setRealPreparationLoading(true); } setRealSetup(value); }} onClose={() => { if (realStarting) return; setRealSetupOpen(false); setRealPreparation(null); setRealPreparationLoading(false); setRealStartError(""); setLinkedAppointmentId(null); }} onStart={startRealSession}/>}
     {setupOpen && <ModalLayer onDismiss={() => { setSetupOpen(false); setLinkedAppointmentId(null); }} className="modal-backdrop"><section className="session-setup-modal" role="dialog" aria-modal="true" aria-labelledby="session-setup-title"><div className="modal-title"><div><p className="section-kicker">{linkedAppointmentId ? "Sesión programada" : "Nueva sesión"}</p><h2 id="session-setup-title">Preparar hoja de datos</h2></div><button aria-label="Cerrar" onClick={() => { setSetupOpen(false); setLinkedAppointmentId(null); }}><X size={19}/></button></div><p className="modal-intro">La sesión incluirá automáticamente todos los programas activos del niño. El contexto permite evaluar criterios de generalización sin confundir escenarios.</p><div className="session-setup-form"><label><span>Niño</span><select disabled={Boolean(linkedAppointmentId)} value={setup.profileId} onChange={(event) => setSetup({ ...setup, profileId: event.target.value })}><option value="">Seleccionar niño</option>{activeProfiles.filter((profile) => programs.some((program) => program.profileId === profile.id && program.status === "active" && program.targets.some((target) => target.state !== "closed"))).map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName} · {profile.site}</option>)}</select></label><label><span>Fecha</span><input type="date" disabled={Boolean(linkedAppointmentId)} value={setup.sessionDate} onChange={(event) => setSetup({ ...setup, sessionDate: event.target.value })}/></label><label className="field-wide"><span>Contexto de la sesión</span><input autoFocus value={setup.context} onChange={(event) => setSetup({ ...setup, context: event.target.value })} placeholder="Ej. Terapia individual, sede León"/></label><label className="field-wide"><span>Plantilla de nota</span><select value={setup.noteTemplateId} onChange={(event) => setSetup({ ...setup, noteTemplateId: event.target.value })}>{noteTemplates.map((template) => <option value={template.id} key={template.id}>{template.name}</option>)}</select>{selectedNoteTemplate && <small>{selectedNoteTemplate.description}</small>}</label></div>{setupProfile && <div className="setup-program-summary"><Layers3 size={18}/><div><strong>{setupPrograms.length} programa{setupPrograms.length === 1 ? "" : "s"} · {setupPrograms.reduce((sum, program) => sum + program.targets.filter((target) => target.state !== "closed").length, 0)} targets abiertos</strong><p>{setupPrograms.map((program) => program.name).join(" · ") || "No hay programas activos disponibles."}</p></div></div>}<div className="modal-actions"><button className="secondary-formation-button" onClick={() => { setSetupOpen(false); setLinkedAppointmentId(null); }}>Cancelar</button><button className="primary-formation-button" disabled={!setupPrograms.length || !selectedNoteTemplate} onClick={beginSession}><Play size={16}/> Iniciar sesión completa</button></div></section></ModalLayer>}
     {templateManagerOpen && canManageSessionNoteTemplates && <ModalLayer onDismiss={() => { setTemplateManagerOpen(false); setTemplateDraft(null); }} className="modal-backdrop"><section className="session-template-manager" role="dialog" aria-modal="true" aria-labelledby="session-template-title"><div className="modal-title"><div><p className="section-kicker">Dirección Clínica</p><h2 id="session-template-title">Plantillas de notas de sesión</h2></div><button aria-label="Cerrar" onClick={() => { setTemplateManagerOpen(false); setTemplateDraft(null); }}><X size={19}/></button></div>{templateDraft ? <div className="session-template-editor"><div className="session-template-main-fields"><label><span>Nombre de la plantilla</span><input autoFocus value={templateDraft.name} onChange={(event) => setTemplateDraft({ ...templateDraft, name: event.target.value })} placeholder="Ej. Nota para intervención temprana"/></label><label><span>Descripción</span><textarea value={templateDraft.description} onChange={(event) => setTemplateDraft({ ...templateDraft, description: event.target.value })} placeholder="Cuándo debe utilizarse esta plantilla"/></label></div><div className="session-template-fields-heading"><div><strong>Campos de la nota</strong><small>Define qué debe documentar el profesional y qué respuestas son obligatorias.</small></div><button className="secondary-formation-button" onClick={() => setTemplateDraft({ ...templateDraft, fields: [...templateDraft.fields, { id: crypto.randomUUID(), label: "", guidance: "", required: false }] })}><Plus size={15}/> Añadir campo</button></div><div className="session-template-field-list">{templateDraft.fields.map((field, index) => <article key={field.id}><span>{index + 1}</span><div><label><span>Título del campo</span><input value={field.label} onChange={(event) => updateTemplateField(index, { label: event.target.value })} placeholder="Información que debe registrarse"/></label><label><span>Guía para el profesional</span><textarea value={field.guidance} onChange={(event) => updateTemplateField(index, { guidance: event.target.value })} placeholder="Indicaciones breves y clínicas"/></label><label className="criterion-checkbox"><input type="checkbox" checked={field.required} onChange={(event) => updateTemplateField(index, { required: event.target.checked })}/><span>Campo obligatorio para cerrar la sesión</span></label></div><button className="icon-danger" aria-label={`Eliminar campo ${index + 1}`} disabled={templateDraft.fields.length === 1} onClick={() => setTemplateDraft({ ...templateDraft, fields: templateDraft.fields.filter((_, itemIndex) => itemIndex !== index) })}><Trash2 size={16}/></button></article>)}</div><footer><button className="secondary-formation-button" onClick={() => setTemplateDraft(null)}>Volver</button><button className="primary-formation-button" disabled={saving} onClick={saveNoteTemplate}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar plantilla</button></footer></div> : <><div className="session-template-manager-heading"><p>La plantilla seleccionada queda copiada dentro de cada nota cerrada. Los cambios futuros no alteran el historial.</p><button className="primary-formation-button" onClick={() => setTemplateDraft(blankSessionNoteTemplate())}><Plus size={16}/> Crear desde cero</button></div><div className="session-template-list">{noteTemplates.map((template) => <article key={template.id}><span className={template.builtIn ? "built-in" : "custom"}><NotebookPen size={18}/></span><div><div><strong>{template.name}</strong>{template.builtIn && <em>Predeterminada</em>}</div><p>{template.description}</p><small>{template.fields.length} campos · {template.fields.filter((field) => field.required).length} obligatorios</small></div>{!template.builtIn && <div><button aria-label={`Editar ${template.name}`} onClick={() => setTemplateDraft(JSON.parse(JSON.stringify(template)) as SessionNoteTemplateDraft)}><Edit3 size={16}/></button><button className="danger-action" aria-label={`Archivar ${template.name}`} onClick={() => archiveNoteTemplate(template)}><Trash2 size={16}/></button></div>}</article>)}</div></>}</section></ModalLayer>}
     {editingSession && (() => { const program = programs.find((item) => item.id === editingSession.programId); return <ModalLayer onDismiss={() => setEditingSession(null)} className="modal-backdrop"><section className="session-edit-modal" role="dialog" aria-modal="true" aria-labelledby="session-edit-title"><div className="modal-title"><div><p className="section-kicker">Sesión cerrada</p><h2 id="session-edit-title">Editar sesión</h2></div><button aria-label="Cerrar" onClick={() => setEditingSession(null)}><X size={19}/></button></div><div className="session-edit-fields"><label><span>Fecha</span><input type="date" disabled={Boolean(editingSession.clinicalSessionRunId)} value={editingSession.sessionDate} onChange={(event) => setEditingSession({ ...editingSession, sessionDate: event.target.value })}/></label><label><span>Contexto</span><input disabled={Boolean(editingSession.clinicalSessionRunId)} value={editingSession.context} onChange={(event) => setEditingSession({ ...editingSession, context: event.target.value })}/></label><label className="field-wide"><span>Nota de sesión</span><textarea disabled={Boolean(editingSession.clinicalSessionRunId)} value={editingSession.notes} onChange={(event) => setEditingSession({ ...editingSession, notes: event.target.value })}/>{editingSession.clinicalSessionRunId && <small>Edita aquí únicamente los datos de este programa; la nota y el contexto pertenecen a la sesión completa.</small>}</label></div><div className="session-edit-results">{editingSession.results.map((result) => { const target = program?.targets.find((item) => item.id === result.targetId); return <article key={result.targetId}><div><strong>{target ? `${target.code} · ${target.name}` : "Target"}</strong><small>{target ? measurementLabel(target.measurement) : "Resultado registrado"}</small>{result.criterionReason && <em className={`criterion-result ${result.criterionStatus}`}>{result.criterionReason}</em>}</div>{target?.measurement === "occurrence" ? <div className="session-edit-trials"><strong>{result.trials?.reduce<number>((sum, trial) => sum + trial, 0) || 0}/{result.trials?.length || 0}</strong><button type="button" onClick={() => updateEditingSessionResult(result.targetId, { trials: [...(result.trials || []), 1] })}><Check size={13}/> Correcto</button><button type="button" onClick={() => updateEditingSessionResult(result.targetId, { trials: [...(result.trials || []), 0] })}><X size={13}/> Incorrecto</button><button type="button" disabled={!result.trials?.length} onClick={() => updateEditingSessionResult(result.targetId, { trials: (result.trials || []).slice(0, -1) })}><Trash2 size={13}/> Quitar último</button></div> : target?.measurement === "percentage" ? <><label><span>Correctas</span><input type="number" min="0" disabled={!result.sampled} value={result.correct ?? ""} onChange={(event) => updateEditingSessionResult(result.targetId, { correct: event.target.value === "" ? null : Number(event.target.value) })}/></label><label><span>Oportunidades</span><input type="number" min="0" disabled={!result.sampled} value={result.opportunities} onChange={(event) => updateEditingSessionResult(result.targetId, { opportunities: Number(event.target.value) })}/></label></> : <><label><span>Valor</span><input type="number" step="any" disabled={!result.sampled} value={result.value ?? ""} onChange={(event) => updateEditingSessionResult(result.targetId, { value: event.target.value === "" ? null : Number(event.target.value) })}/></label><label><span>Oportunidades</span><input type="number" min="0" disabled={!result.sampled} value={result.opportunities} onChange={(event) => updateEditingSessionResult(result.targetId, { opportunities: Number(event.target.value) })}/></label></>}<label><span>Nota</span><input disabled={!result.sampled} value={result.note} onChange={(event) => updateEditingSessionResult(result.targetId, { note: event.target.value })}/></label><label className="sample-toggle compact"><input type="checkbox" checked={result.sampled} onChange={(event) => updateEditingSessionResult(result.targetId, { sampled: event.target.checked })}/><span>Incluir</span></label></article>; })}</div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setEditingSession(null)}>Cancelar</button><button className="primary-formation-button" disabled={saving} onClick={saveSessionEdits}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar cambios</button></div></section></ModalLayer>; })()}
     {deleteProgramTarget && <ModalLayer onDismiss={() => setDeleteProgramTarget(null)} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-program-title"><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-program-title">Eliminar programa permanentemente</h2><p>Se eliminarán “{deleteProgramTarget.name}”, todos sus targets y todas sus sesiones. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteProgramTarget(null)}>Cancelar</button><button className="danger-button" disabled={deleteText.trim().toUpperCase() !== "ELIMINAR" || saving} onClick={deleteProgram}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></ModalLayer>}
     {deleteSessionTarget && <ModalLayer onDismiss={() => setDeleteSessionTarget(null)} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-session-title"><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-session-title">Eliminar sesión permanentemente</h2><p>La sesión del {new Date(`${deleteSessionTarget.sessionDate}T12:00:00`).toLocaleDateString("es-NI")} será eliminada y los estados del programa se recalcularán con la evidencia restante.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteSessionTarget(null)}>Cancelar</button><button className="danger-button" disabled={deleteText.trim().toUpperCase() !== "ELIMINAR" || saving} onClick={deleteSession}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></ModalLayer>}
-    {programModal && <ProgramModal form={form} cycles={cycles} profiles={activeProfiles} saving={saving} onChange={setForm} onTargetChange={updateTarget} onCriterionChange={updateCriterion} onAddTarget={addTarget} onRemoveTarget={removeTarget} onClose={() => setProgramModal(false)} onSave={saveProgram}/>} 
+    {programModal && <ProgramModal form={form} cycles={cycles} profiles={activeProfiles} saving={saving} dirty={programDirty} draftStatus={programDraftStatus} onChange={setForm} onTargetChange={updateTarget} onCriterionChange={updateCriterion} onAddTarget={addTarget} onRemoveTarget={removeTarget} onClose={closeProgramEditor} onSave={saveProgram}/>}
   </>;
 }
 
@@ -1102,6 +1177,8 @@ function ProgramModal({
   cycles,
   profiles,
   saving,
+  dirty,
+  draftStatus,
   onChange,
   onTargetChange,
   onCriterionChange,
@@ -1114,6 +1191,8 @@ function ProgramModal({
   cycles: CycleOption[];
   profiles: PersonnelProfile[];
   saving: boolean;
+  dirty: boolean;
+  draftStatus: string;
   onChange: (form: ProgramForm) => void;
   onTargetChange: (index: number, patch: Partial<TargetDefinition>) => void;
   onCriterionChange: (index: number, stage: CriterionStage, patch: Partial<Criterion>) => void;
@@ -1127,7 +1206,7 @@ function ProgramModal({
   const selectedGraphTargetIndex = Math.max(0, form.graphConfig.primaryTargetId
     ? form.targets.findIndex((target) => target.id === form.graphConfig.primaryTargetId)
     : form.graphConfig.primaryTargetIndex || 0);
-  return <ModalLayer onDismiss={onClose} className="modal-backdrop program-modal-backdrop"><section className="intervention-program-modal" role="dialog" aria-modal="true" aria-labelledby="program-modal-title"><div className="modal-title sticky-modal-title"><div><p className="section-kicker">Programa de intervención</p><h2 id="program-modal-title">{form.id ? "Editar programa y criterios" : "Crear programa medible"}</h2></div><button aria-label="Cerrar" onClick={onClose}><X size={19}/></button></div><div className="program-modal-body">
+  return <ModalLayer onDismiss={onClose} dismissDisabled={saving} className="modal-backdrop program-modal-backdrop"><section className="intervention-program-modal" role="dialog" aria-modal="true" aria-labelledby="program-modal-title"><div className="modal-title sticky-modal-title"><div><p className="section-kicker">Programa de intervención</p><h2 id="program-modal-title">{form.id ? "Editar programa y criterios" : "Crear programa medible"}</h2></div><button aria-label="Cerrar" disabled={saving} onClick={onClose}><X size={19}/></button></div><div className="program-modal-body">
     <section className="program-main-fields"><div className="modal-section-heading"><span>1</span><div><strong>Objetivo general</strong><p>Asigna el programa a un niño y define el resultado amplio que organizará sus targets.</p></div></div><div className="program-form-grid"><label><span>Niño</span><select autoFocus value={form.profileId || ""} onChange={(event) => { const profile = profiles.find((item) => item.id === event.target.value); onChange({ ...form, profileId: profile?.id || null, participantName: profile?.fullName || "", site: profile?.site || "León", linkedCycleId: null }); }}>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName} · {profile.site}</option>)}</select>{selectedProfile && <small className="profile-field-note">Sede {selectedProfile.site}</small>}</label><label><span>Vincular evaluación (opcional)</span><select value={form.linkedCycleId || ""} onChange={(event) => onChange({ ...form, linkedCycleId: event.target.value || null })}><option value="">Sin vincular</option>{eligibleCycles.map((cycle) => <option value={cycle.id} key={cycle.id}>{cycle.programContext}</option>)}</select></label><label className="field-wide"><span>Nombre del programa</span><input value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder="Ej. Comunicación funcional"/></label><label className="field-wide"><span>Objetivo general</span><textarea value={form.objective} onChange={(event) => onChange({ ...form, objective: event.target.value })} placeholder="Describa el resultado global esperado y su relevancia funcional."/></label><label className="field-wide"><span>Instrucciones del programa (opcional)</span><textarea value={form.instructions} onChange={(event) => onChange({ ...form, instructions: event.target.value })} placeholder="Procedimiento, materiales o condiciones relevantes para la sesión."/></label></div></section>
     <section className="program-graph-config"><div className="modal-section-heading"><span>2</span><div><strong>Gráfica principal del programa</strong><p>El expediente abre primero la serie agregada del programa; las gráficas de targets quedan disponibles dentro de ella.</p></div></div><div className="program-form-grid">
       <label><span>Tipo de gráfica</span><select value={form.graphConfig.graphType} onChange={(event) => onChange({ ...form, graphConfig: { ...form.graphConfig, graphType: event.target.value as ProgramGraphType } })}><option value="line">Línea</option><option value="bar">Barras</option><option value="cumulative">Acumulativa de targets masterizados</option></select></label>
@@ -1150,5 +1229,5 @@ function ProgramModal({
         {target.measurement === "task_analysis" && <label className="field-wide"><span>Pasos de la cadena · uno por línea</span><textarea value={(target.sessionConfig?.taskSteps || []).join("\n")} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, taskSteps: event.target.value.split("\n").map((step) => step.trim()).filter(Boolean) } })} placeholder={"1. Primer paso\n2. Segundo paso\n3. Tercer paso"}/></label>}
       </div></article>)}</div>
     </section>
-  </div><div className="program-modal-footer"><div><BarChart3 size={17}/><span>Los datos se registran una sola vez durante la sesión y alimentan automáticamente la gráfica del programa.</span></div><div><button className="secondary-formation-button" onClick={onClose}>Cancelar</button><button className="primary-formation-button" disabled={saving} onClick={onSave}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {form.id ? "Guardar cambios" : "Crear programa"}</button></div></div></section></ModalLayer>;
+  </div><div className="program-modal-footer"><div className="program-footer-info"><span><BarChart3 size={17}/> Los datos se registran una sola vez y alimentan la gráfica del programa.</span><small className={dirty ? "pending" : "saved"}><Save size={13}/>{draftStatus}</small></div><div><button className="secondary-formation-button" disabled={saving} onClick={onClose}>Cancelar</button><button className="primary-formation-button" disabled={saving} onClick={onSave}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {form.id ? "Guardar cambios" : "Crear programa"}</button></div></div></section></ModalLayer>;
 }
