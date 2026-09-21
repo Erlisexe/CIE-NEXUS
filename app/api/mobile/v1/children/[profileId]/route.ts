@@ -14,6 +14,7 @@ import { mobileApiGuard, mobileData, mobileError } from "../../../../../../lib/m
 import { mobileProfileScope } from "../../../../../../lib/mobile-data";
 import { DEFAULT_SESSION_NOTE_TEMPLATE, sanitizeSessionNoteFields } from "../../../../../../lib/session-note-templates";
 import { normalizeSessionTargetConfig } from "../../../../../../lib/mobile-collection";
+import { normalizeMeasurementConfig } from "../../../../../../lib/clinical-measurement";
 
 function parsed<T>(value: unknown, fallback: T): T {
   if (typeof value !== "string") return (value as T) ?? fallback;
@@ -132,20 +133,26 @@ export async function GET(request: Request) {
           objective: program.objective,
           instructions: program.instructions,
           graphConfig: parsed(program.graphConfig, {}),
-          targets: programTargets.map((target) => ({
+          targets: programTargets.map((target) => {
+            const measurement = normalizeMeasurementConfig(target);
+            return {
             id: target.id,
             code: target.code,
             name: target.name,
             specificObjective: target.specificObjective,
             measurement: target.measurement,
-            unitLabel: target.unitLabel,
+            // Older APKs ignore these optional fields and retain the legacy
+            // measurement code; current clients can present the exact model.
+            measurementDimension: measurement.measurementDimension,
+            recordingFormat: measurement.recordingFormat,
+            unitLabel: target.unitLabel || measurement.unitLabel,
             state: normalizeTargetState(target.state),
             criteria: normalizeCriteria(target.criteria, target.measurement),
             sessionConfig: normalizeSessionTargetConfig(target.sessionConfig),
             masteryAchieved: target.masteryAchieved,
             masteredAt: target.masteredAt,
             masteryMethod: target.masteryMethod,
-          })),
+          }; }),
           cumulativeMastery: canViewGraphs
             ? buildCumulativeMasteryTimeline(events, programSessions)
             : [],

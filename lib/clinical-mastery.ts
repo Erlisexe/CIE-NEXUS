@@ -33,7 +33,9 @@ export type TargetCriteria = Record<CriterionStage, MasteryCriterion>;
 
 export type TrialValue = 0 | 1;
 
-export type TrialResponseCode = "I" | "G" | "V" | "M" | "FP" | "FT" | "X";
+// O/N distinguish an opportunity record from an instructional trial.  The
+// original I/G/V/M/FP/FT/X evidence remains valid and is never rewritten.
+export type TrialResponseCode = "I" | "G" | "V" | "M" | "FP" | "FT" | "X" | "O" | "N";
 
 export type ClinicalTrialDetail = {
   id: string;

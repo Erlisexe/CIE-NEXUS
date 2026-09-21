@@ -44,11 +44,11 @@ import { DEFAULT_SESSION_NOTE_TEMPLATE, type SessionNoteField } from "../../lib/
 import { summarizeClosedSessions, programsForClinicalSession } from "../../lib/clinical-session-runs";
 import { targetStateLabel } from "../../lib/clinical-mastery";
 import { programDraftStorageKey, programFormSnapshot, readProgramDraft, removeProgramDraft, writeProgramDraft } from "../../lib/program-drafts";
+import { MEASUREMENT_DIMENSIONS, defaultRecordingFormatForDimension, isBinaryOpportunityMeasurement, measurementDimensionLabel, measurementDisplayLabel, normalizeMeasurementConfig, percentageCriterionLabel, recordingFormatLabel, recordingFormatsForDimension, sampleUnitLabel, unitForMeasurementConfig, usesEventCount, usesPartialIntervals, usesTaskAnalysis, usesTimedMeasurement, type MeasurementDimension, type RecordingFormat } from "../../lib/clinical-measurement";
 
 const STATE_ORDER = ["baseline", "acquisition", "generalization", "maintenance", "closed"] as const;
 type TargetState = typeof STATE_ORDER[number];
 type CriterionStage = Exclude<TargetState, "closed">;
-type Measurement = "percentage" | "frequency" | "duration" | "latency" | "occurrence" | "discrete_trials" | "partial_interval" | "task_analysis";
 type ProgramGraphType = "line" | "bar" | "cumulative";
 type ProgramGraphDesign = "simple" | "AB" | "ABA" | "ABAB" | "BAB" | "multiple-baseline" | "multielement" | "changing-criterion" | "custom";
 
@@ -79,7 +79,10 @@ type TargetDefinition = {
   code: string;
   name: string;
   specificObjective: string;
-  measurement: Measurement;
+  /** Legacy compatibility code; canonical choice lives in the two fields below. */
+  measurement: string;
+  measurementDimension?: MeasurementDimension;
+  recordingFormat?: RecordingFormat;
   unitLabel: string;
   state: TargetState;
   masteryAchieved?: boolean;
@@ -186,33 +189,36 @@ function stageDestination(stage: CriterionStage) {
   return stage === "baseline" ? "Masterizado o Adquisición" : stage === "acquisition" ? "Masterizado" : stage === "generalization" ? "Generalizado" : "Cerrado";
 }
 
-function measurementLabel(measurement: Measurement) {
-  return {
-    percentage: "Porcentaje / ensayos",
-    frequency: "Frecuencia",
-    duration: "Duración",
-    latency: "Latencia",
-    occurrence: "Ensayos discretos",
-    discrete_trials: "Ensayos discretos con ayudas",
-    partial_interval: "Intervalo parcial",
-    task_analysis: "Análisis de tarea",
-  }[measurement];
+function measurementLabel(target: Pick<TargetDefinition, "measurement" | "measurementDimension" | "recordingFormat"> | string) {
+  return measurementDisplayLabel(typeof target === "string" ? { measurement: target } : target);
 }
 
-function unitFor(measurement: Measurement) {
-  return ["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(measurement) ? "%" : measurement === "frequency" ? "ocurrencias" : "segundos";
-}
-
-function defaultCriterion(stage: CriterionStage, measurement: Measurement = "percentage"): Criterion {
+function defaultCriterion(stage: CriterionStage, measurement: Pick<TargetDefinition, "measurement" | "measurementDimension" | "recordingFormat"> | string = "discrete_trials"): Criterion {
+  const binary = isBinaryOpportunityMeasurement(typeof measurement === "string" ? { measurement } : measurement);
   return {
-    metric: ["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(measurement) ? "percentage_correct" : "value",
+    metric: binary ? "percentage_correct" : "value",
     operator: "gte",
     threshold: stage === "baseline" ? 90 : 80,
     requiredSessions: stage === "baseline" ? 1 : stage === "generalization" || stage === "maintenance" ? 2 : 3,
-    minTrials: ["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(measurement) ? 3 : 1,
+    minTrials: binary ? 3 : 1,
     consecutive: true,
     distinctContexts: stage === "generalization" ? 2 : 1,
     insufficientSampleBreaksStreak: false,
+  };
+}
+
+function measurementPatch(dimension: MeasurementDimension, format: RecordingFormat): Pick<TargetDefinition, "measurement" | "measurementDimension" | "recordingFormat" | "unitLabel" | "criteria"> {
+  const config = normalizeMeasurementConfig({ measurementDimension: dimension, recordingFormat: format });
+  const target = { measurement: config.measurement, measurementDimension: config.measurementDimension, recordingFormat: config.recordingFormat };
+  return {
+    ...target,
+    unitLabel: unitForMeasurementConfig(config.measurementDimension, config.recordingFormat),
+    criteria: {
+      baseline: defaultCriterion("baseline", target),
+      acquisition: defaultCriterion("acquisition", target),
+      generalization: defaultCriterion("generalization", target),
+      maintenance: defaultCriterion("maintenance", target),
+    },
   };
 }
 
@@ -221,15 +227,8 @@ function blankTarget(index: number): TargetDefinition {
     code: `T${String(index + 1).padStart(2, "0")}`,
     name: "",
     specificObjective: "",
-    measurement: "percentage",
-    unitLabel: "%",
+    ...measurementPatch("occurrence", "trial_by_trial"),
     state: "baseline",
-    criteria: {
-      baseline: defaultCriterion("baseline"),
-      acquisition: defaultCriterion("acquisition"),
-      generalization: defaultCriterion("generalization"),
-      maintenance: defaultCriterion("maintenance"),
-    },
     sessionConfig: { discriminativeStimulus: "", teachingInstructions: "", taskSteps: [], intervalSeconds: 30, maintenanceProbeEveryDays: 7 },
   };
 }
@@ -246,6 +245,18 @@ function blankProgram(profile?: PersonnelProfile): ProgramForm {
     graphConfig: { graphType: "line", designType: "AB", clinicalMetric: "percentage", clinicalGrouping: "session", primaryTargetId: null, primaryTargetIndex: 0, showPoints: true, showLegend: true },
     targets: [blankTarget(0)],
   };
+}
+
+function TargetMeasurementFields({ target, index, onTargetChange }: { target: TargetDefinition; index: number; onTargetChange: (index: number, patch: Partial<TargetDefinition>) => void }) {
+  const config = normalizeMeasurementConfig(target);
+  const formats = recordingFormatsForDimension(config.measurementDimension);
+  const selectMeasurement = (dimension: MeasurementDimension, format: RecordingFormat) => onTargetChange(index, measurementPatch(dimension, format));
+  return <>
+    <label><span>Dimensión de medición</span><select value={config.measurementDimension} onChange={(event) => { const dimension = event.target.value as MeasurementDimension; selectMeasurement(dimension, defaultRecordingFormatForDimension(dimension)); }}>{MEASUREMENT_DIMENSIONS.map((dimension) => <option value={dimension} key={dimension}>{measurementDimensionLabel(dimension)}</option>)}</select></label>
+    <label><span>Formato de registro</span><select value={config.recordingFormat} onChange={(event) => selectMeasurement(config.measurementDimension, event.target.value as RecordingFormat)}>{formats.map((format) => <option value={format} key={format}>{recordingFormatLabel(format)}</option>)}</select></label>
+    <label><span>Unidad calculada</span><input readOnly value={unitForMeasurementConfig(config.measurementDimension, config.recordingFormat)} aria-label="Unidad calculada"/></label>
+    <p className="field-wide clinical-measurement-note">El porcentaje es un resultado derivado de los registros; no es un método de medición.</p>
+  </>;
 }
 
 function criterionText(target: TargetDefinition) {
@@ -765,7 +776,7 @@ export default function InterventionSessionManager({
       sampled: true,
       value: "",
       correct: "",
-      opportunities: target.measurement === "percentage" || target.measurement === "occurrence" ? "" : "1",
+      opportunities: isBinaryOpportunityMeasurement(target) ? "" : "1",
       trials: [],
       note: "",
     }]));
@@ -799,10 +810,10 @@ export default function InterventionSessionManager({
 
   function computedValue(target: TargetDefinition, result: SessionResultDraft) {
     if (!result.sampled) return null;
-    if (target.measurement === "occurrence" || target.measurement === "percentage" && result.trials.length) {
+    if (isBinaryOpportunityMeasurement(target) && result.trials.length) {
       return result.trials.length ? Math.round((result.trials.reduce<number>((sum, trial) => sum + trial, 0) / result.trials.length) * 1000) / 10 : null;
     }
-    if (target.measurement === "percentage") {
+    if (isBinaryOpportunityMeasurement(target)) {
       const correct = Number(result.correct);
       const opportunities = Number(result.opportunities);
       return Number.isFinite(correct) && Number.isFinite(opportunities) && opportunities > 0 ? Math.round((correct / opportunities) * 1000) / 10 : null;
@@ -813,7 +824,7 @@ export default function InterventionSessionManager({
   }
 
   function targetOpportunityCount(target: TargetDefinition, result: SessionResultDraft) {
-    if (target.measurement === "percentage" || target.measurement === "occurrence") {
+    if (isBinaryOpportunityMeasurement(target)) {
       return result.trials.length || Math.max(0, Number(result.opportunities || 0));
     }
     return result.value === "" ? 0 : Math.max(1, Number(result.opportunities || 1));
@@ -881,9 +892,9 @@ export default function InterventionSessionManager({
           targetId: target.id,
           sampled: draft?.sampled ?? false,
           value: draft ? computedValue(target, draft) : null,
-          correct: target.measurement === "occurrence" || target.measurement === "percentage" && Boolean(draft?.trials.length) ? draft?.trials.reduce<number>((sum, trial) => sum + trial, 0) ?? null : draft?.correct === "" ? null : Number(draft?.correct),
-          opportunities: target.measurement === "occurrence" || target.measurement === "percentage" && Boolean(draft?.trials.length) ? draft?.trials.length || 0 : Number(draft?.opportunities || 0),
-          trials: target.measurement === "occurrence" || target.measurement === "percentage" ? draft?.trials || [] : [],
+          correct: isBinaryOpportunityMeasurement(target) && Boolean(draft?.trials.length) ? draft?.trials.reduce<number>((sum, trial) => sum + trial, 0) ?? null : draft?.correct === "" ? null : Number(draft?.correct),
+          opportunities: isBinaryOpportunityMeasurement(target) && Boolean(draft?.trials.length) ? draft?.trials.length || 0 : Number(draft?.opportunities || 0),
+          trials: isBinaryOpportunityMeasurement(target) ? draft?.trials || [] : [],
           note: draft?.note || "",
         };
       }),
@@ -1060,7 +1071,7 @@ export default function InterventionSessionManager({
               return <button type="button" key={target.id} className={`${target.id === focusedTarget?.id ? "active" : ""} ${minimumMet ? "minimum-met" : ""} ${result?.sampled ? "" : "excluded"}`} aria-current={target.id === focusedTarget?.id ? "true" : undefined} onClick={() => selectTarget(target.id as string)}>
                 <span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span>
                 <strong>{target.code} · {target.name}</strong>
-                <small>{target.measurement === "percentage" || target.measurement === "occurrence" ? `${correct}/${result?.trials.length || 0} correctas` : value === null ? "Sin datos" : `${value} ${target.unitLabel}`}</small>
+                <small>{isBinaryOpportunityMeasurement(target) ? `${correct}/${result?.trials.length || 0} registradas` : value === null ? "Sin datos" : `${value} ${target.unitLabel}`}</small>
                 {minimumMet ? <em><Check size={12}/> Mínimo alcanzado</em> : opportunities > 0 ? <em>{opportunities}/{criterion.minTrials} oportunidades</em> : <em>Pendiente</em>}
               </button>;
             })}
@@ -1085,9 +1096,9 @@ export default function InterventionSessionManager({
             </div>
 
             {focusedResult.sampled ? <div className="session-capture-area">
-              <div className="capture-method-heading"><div><small>Método de registro</small><strong>{measurementLabel(focusedTarget.measurement)}</strong></div>{focusedValue !== null && <span>{focusedValue} {focusedTarget.unitLabel}</span>}</div>
+              <div className="capture-method-heading"><div><small>Registro</small><strong>{measurementLabel(focusedTarget)}</strong></div>{focusedValue !== null && <span>{focusedValue} {focusedTarget.unitLabel}</span>}</div>
 
-              {(focusedTarget.measurement === "percentage" || focusedTarget.measurement === "occurrence") && <>
+              {isBinaryOpportunityMeasurement(focusedTarget) && <>
                 <div className="trial-live-summary"><div><strong>{focusedCorrect}</strong><small>Correctas</small></div><div><strong>{focusedResult.trials.length}</strong><small>Ensayos</small></div><div><strong>{focusedValue ?? 0}%</strong><small>Resultado</small></div></div>
                 <div className="trial-response-buttons">
                   <button type="button" className="correct" onClick={() => recordTrial(focusedTarget.id as string, 1)}><Check size={25}/><span><strong>Correcto</strong><small>Registrar respuesta</small></span></button>
@@ -1098,9 +1109,9 @@ export default function InterventionSessionManager({
                 {focusedResult.trials.length ? <div className="trial-history-grid" aria-label="Ensayos registrados">{focusedResult.trials.map((trial, trialIndex) => <div className={trial === 1 ? "correct" : "incorrect"} key={`${focusedTarget.id}-trial-${trialIndex}`}><span>{trialIndex + 1}</span><button type="button" aria-label={`Cambiar resultado del ensayo ${trialIndex + 1}`} onClick={() => updateSessionResult(focusedTarget.id as string, { trials: focusedResult.trials.map((item, index) => index === trialIndex ? item === 1 ? 0 : 1 : item) })}>{trial === 1 ? <Check size={16}/> : <X size={16}/>}</button><button type="button" aria-label={`Eliminar ensayo ${trialIndex + 1}`} onClick={() => updateSessionResult(focusedTarget.id as string, { trials: focusedResult.trials.filter((_, index) => index !== trialIndex) })}><Trash2 size={13}/></button></div>)}</div> : <p className="trial-history-empty">Toca Correcto o Incorrecto para registrar el primer ensayo.</p>}
               </>}
 
-              {focusedTarget.measurement === "frequency" && <div className="frequency-capture"><div><small>Ocurrencias registradas</small><strong>{Math.max(0, Number(focusedResult.value || 0))}</strong></div><button type="button" className="frequency-add" onClick={() => adjustFrequency(focusedTarget.id as string, 1)}><Plus size={26}/> Registrar ocurrencia</button><button type="button" className="capture-undo" disabled={Number(focusedResult.value || 0) <= 0} onClick={() => adjustFrequency(focusedTarget.id as string, -1)}><RotateCcw size={15}/> Deshacer</button></div>}
+              {usesEventCount(focusedTarget) && <div className="frequency-capture"><div><small>Ocurrencias registradas</small><strong>{Math.max(0, Number(focusedResult.value || 0))}</strong></div><button type="button" className="frequency-add" onClick={() => adjustFrequency(focusedTarget.id as string, 1)}><Plus size={26}/> Registrar ocurrencia</button><button type="button" className="capture-undo" disabled={Number(focusedResult.value || 0) <= 0} onClick={() => adjustFrequency(focusedTarget.id as string, -1)}><RotateCcw size={15}/> Deshacer</button></div>}
 
-              {(focusedTarget.measurement === "duration" || focusedTarget.measurement === "latency") && <div className="timer-capture"><small>{focusedTarget.measurement === "duration" ? "Tiempo acumulado" : "Latencia observada"}</small><strong>{formatElapsed(Math.max(0, Math.round(Number(focusedResult.value || 0))))}</strong><div><button type="button" className={runningTimerTargetId === focusedTarget.id ? "pause" : "start"} onClick={() => setRunningTimerTargetId((current) => current === focusedTarget.id ? null : focusedTarget.id as string)}>{runningTimerTargetId === focusedTarget.id ? <><Pause size={18}/> Pausar</> : <><Play size={18}/> Iniciar cronómetro</>}</button><button type="button" onClick={() => { setRunningTimerTargetId(null); updateSessionResult(focusedTarget.id as string, { value: "", opportunities: "1" }); }}><RotateCcw size={16}/> Reiniciar</button></div><label><span>Ajuste manual en segundos</span><input type="number" min="0" step="1" value={focusedResult.value} onChange={(event) => { setRunningTimerTargetId(null); updateSessionResult(focusedTarget.id as string, { value: event.target.value, opportunities: "1" }); }}/></label></div>}
+              {usesTimedMeasurement(focusedTarget) && <div className="timer-capture"><small>{normalizeMeasurementConfig(focusedTarget).measurementDimension === "duration" ? "Tiempo acumulado" : "Latencia observada"}</small><strong>{formatElapsed(Math.max(0, Math.round(Number(focusedResult.value || 0))))}</strong><div><button type="button" className={runningTimerTargetId === focusedTarget.id ? "pause" : "start"} onClick={() => setRunningTimerTargetId((current) => current === focusedTarget.id ? null : focusedTarget.id as string)}>{runningTimerTargetId === focusedTarget.id ? <><Pause size={18}/> Pausar</> : <><Play size={18}/> Iniciar cronómetro</>}</button><button type="button" onClick={() => { setRunningTimerTargetId(null); updateSessionResult(focusedTarget.id as string, { value: "", opportunities: "1" }); }}><RotateCcw size={16}/> Reiniciar</button></div><label><span>Ajuste manual en segundos</span><input type="number" min="0" step="1" value={focusedResult.value} onChange={(event) => { setRunningTimerTargetId(null); updateSessionResult(focusedTarget.id as string, { value: event.target.value, opportunities: "1" }); }}/></label></div>}
 
               <label className="focused-target-note"><span>Nota breve del target <em>Opcional</em></span><input value={focusedResult.note} onChange={(event) => updateSessionResult(focusedTarget.id as string, { note: event.target.value })} placeholder="Ayuda utilizada, contexto o variable relevante"/></label>
             </div> : <div className="target-excluded-state"><CircleDashed size={28}/><strong>Target no trabajado en esta sesión</strong><p>No se enviará un resultado ni afectará la evaluación del criterio.</p><button type="button" onClick={() => updateSessionResult(focusedTarget.id as string, { sampled: true })}>Incluir target</button></div>}
@@ -1134,7 +1145,7 @@ export default function InterventionSessionManager({
           <div className="program-general-objective"><small>Objetivo general</small><p>{program.objective}</p></div>
           <div className="program-state-summary">{STATE_ORDER.map((state) => { const count = program.targets.filter((target) => target.state === state).length; return count ? <span className={`target-state ${state}`} key={state}>{count} {stateLabel(state)}</span> : null; })}</div>
           <footer><span><Target size={15}/> {program.targets.length} target{program.targets.length === 1 ? "" : "s"}</span><button onClick={() => setExpandedProgramId(expanded ? null : program.id)}>Ver targets <ChevronDown size={15}/></button>{onOpenProgramGraph && <button onClick={() => onOpenProgramGraph(program.id)}><LineChart size={15}/> Gráfica</button>}</footer>
-          {expanded && <div className="program-target-list">{program.targets.map((target) => <div key={target.id}><span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span><div><strong>{target.code} · {target.name}</strong><p>{target.specificObjective}</p><small>{measurementLabel(target.measurement)} · {criterionText(target)}</small></div></div>)}</div>}
+          {expanded && <div className="program-target-list">{program.targets.map((target) => <div key={target.id}><span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span><div><strong>{target.code} · {target.name}</strong><p>{target.specificObjective}</p><small>{measurementLabel(target)} · {criterionText(target)}</small></div></div>)}</div>}
         </article>;
       })}</div> : <div className="intervention-empty"><CircleDashed size={30}/><strong>Aún no hay programas de intervención</strong><p>{canManagePrograms ? "Crea el primero con su objetivo general, targets y criterios por etapa." : "No hay programas asignados a los niños que puedes consultar."}</p>{canManagePrograms && <button className="primary-formation-button" onClick={openNewProgram}><Plus size={16}/> Crear primer programa</button>}</div>}
       {programModal && <ProgramModal form={form} cycles={cycles} profiles={activeProfiles} saving={saving} dirty={programDirty} draftStatus={programDraftStatus} onChange={setForm} onTargetChange={updateTarget} onCriterionChange={updateCriterion} onAddTarget={addTarget} onRemoveTarget={removeTarget} onClose={closeProgramEditor} onSave={saveProgram}/>}
@@ -1217,16 +1228,18 @@ function ProgramModal({
       <label className="graph-config-toggles"><span>Presentación</span><span><input type="checkbox" checked={form.graphConfig.showPoints} onChange={(event) => onChange({ ...form, graphConfig: { ...form.graphConfig, showPoints: event.target.checked } })}/> Mostrar puntos</span><span><input type="checkbox" checked={form.graphConfig.showLegend} onChange={(event) => onChange({ ...form, graphConfig: { ...form.graphConfig, showLegend: event.target.checked } })}/> Mostrar leyenda</span></label>
     </div></section>
     <section className="program-target-editor"><div className="modal-section-heading"><span>3</span><div><strong>Targets y criterios por estado</strong><p>Cada target funciona como objetivo específico y unidad de medición por sesión.</p></div><button className="secondary-formation-button" onClick={onAddTarget}><Plus size={15}/> Añadir target</button></div>
-      <div className="target-editor-stack">{form.targets.map((target, index) => <article className="target-editor-card" key={target.id || `new-${index}`}><header><div><span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span><strong>Target {index + 1}</strong>{target.masteryAchieved && <span className="mastery-badge">Adquirido {target.masteredAt ? `· ${target.masteredAt}` : ""}</span>}</div><button className="icon-danger" disabled={form.targets.length === 1} aria-label={`Eliminar target ${index + 1}`} onClick={() => onRemoveTarget(index)}><Trash2 size={16}/></button></header><div className="target-basic-grid"><label><span>Código</span><input value={target.code} onChange={(event) => onTargetChange(index, { code: event.target.value })}/></label><label><span>Nombre del target</span><input value={target.name} onChange={(event) => onTargetChange(index, { name: event.target.value })} placeholder="Conducta o competencia específica"/></label><label><span>Método de medición</span><select value={target.measurement} onChange={(event) => { const measurement = event.target.value as Measurement; onTargetChange(index, { measurement, unitLabel: unitFor(measurement), criteria: { baseline: defaultCriterion("baseline", measurement), acquisition: defaultCriterion("acquisition", measurement), generalization: defaultCriterion("generalization", measurement), maintenance: defaultCriterion("maintenance", measurement) } }); }}>{(["discrete_trials", "frequency", "duration", "latency", "partial_interval", "task_analysis", "percentage", "occurrence"] as Measurement[]).map((measurement) => <option value={measurement} key={measurement}>{measurementLabel(measurement)}</option>)}</select></label><label><span>Unidad</span><input value={target.unitLabel} onChange={(event) => onTargetChange(index, { unitLabel: event.target.value })}/></label><label className="field-wide"><span>Objetivo específico observable</span><textarea value={target.specificObjective} onChange={(event) => onTargetChange(index, { specificObjective: event.target.value })} placeholder="Qué hará la persona, bajo qué condiciones y con qué desempeño esperado."/></label></div><div className="criteria-grid">{(["baseline", "acquisition", "generalization", "maintenance"] as CriterionStage[]).map((stage) => { const criterion = target.criteria[stage]; return <fieldset key={stage}><legend><span className={`criterion-dot ${stage}`}/>{stateLabel(stage)} <ArrowRight size={13}/> {stageDestination(stage)}</legend>{stage === "baseline" && <p className="baseline-rule">Si cumple, cierra directamente y suma una vez al repertorio; si no, pasa a Adquisición.</p>}{stage === "acquisition" && <p className="baseline-rule mastery-rule">Al cumplir este criterio se registra el dominio una sola vez, aunque después continúe en Masterizado y Generalizado.</p>}<div><label><span>Métrica</span><select value={criterion.metric} onChange={(event) => onCriterionChange(index, stage, { metric: event.target.value as Criterion["metric"] })}><option value="percentage_correct">% respuestas correctas</option><option value="correct_count">Cantidad correctas</option><option value="value">Valor de la medición</option></select></label><label><span>Operador</span><select value={criterion.operator} onChange={(event) => onCriterionChange(index, stage, { operator: event.target.value as "gte" | "lte" })}><option value="gte">Mayor o igual (≥)</option><option value="lte">Menor o igual (≤)</option></select></label><label><span>Umbral</span><input type="number" step="any" value={criterion.threshold} onChange={(event) => onCriterionChange(index, stage, { threshold: Number(event.target.value) })}/></label><label><span>Mínimo de ensayos</span><input type="number" min="0" value={criterion.minTrials} onChange={(event) => onCriterionChange(index, stage, { minTrials: Number(event.target.value) })}/></label><label><span>Sesiones requeridas</span><input type="number" min="1" value={criterion.requiredSessions} onChange={(event) => onCriterionChange(index, stage, { requiredSessions: Number(event.target.value) })}/></label><label><span>Contextos distintos</span><input type="number" min="1" value={criterion.distinctContexts} onChange={(event) => onCriterionChange(index, stage, { distinctContexts: Number(event.target.value) })}/></label><label className="criterion-checkbox"><input type="checkbox" checked={criterion.consecutive} onChange={(event) => onCriterionChange(index, stage, { consecutive: event.target.checked })}/><span>Exigir sesiones consecutivas</span></label><label className="criterion-checkbox"><input type="checkbox" checked={criterion.insufficientSampleBreaksStreak} onChange={(event) => onCriterionChange(index, stage, { insufficientSampleBreaksStreak: event.target.checked })}/><span>Una muestra insuficiente reinicia la secuencia</span></label></div></fieldset>; })}</div></article>)}</div>
+      <div className="target-editor-stack">{form.targets.map((target, index) => {
+        return <article className="target-editor-card" key={target.id || `new-${index}`}><header><div><span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span><strong>Target {index + 1}</strong>{target.masteryAchieved && <span className="mastery-badge">Adquirido {target.masteredAt ? `· ${target.masteredAt}` : ""}</span>}</div><button className="icon-danger" disabled={form.targets.length === 1} aria-label={`Eliminar target ${index + 1}`} onClick={() => onRemoveTarget(index)}><Trash2 size={16}/></button></header><div className="target-basic-grid"><label><span>Código</span><input value={target.code} onChange={(event) => onTargetChange(index, { code: event.target.value })}/></label><label><span>Nombre del target</span><input value={target.name} onChange={(event) => onTargetChange(index, { name: event.target.value })} placeholder="Conducta o competencia específica"/></label><TargetMeasurementFields target={target} index={index} onTargetChange={onTargetChange}/><label className="field-wide"><span>Objetivo específico observable</span><textarea value={target.specificObjective} onChange={(event) => onTargetChange(index, { specificObjective: event.target.value })} placeholder="Qué hará la persona, bajo qué condiciones y con qué desempeño esperado."/></label></div><div className="criteria-grid">{(["baseline", "acquisition", "generalization", "maintenance"] as CriterionStage[]).map((stage) => { const criterion = target.criteria[stage]; return <fieldset key={stage}><legend><span className={`criterion-dot ${stage}`}/>{stateLabel(stage)} <ArrowRight size={13}/> {stageDestination(stage)}</legend>{stage === "baseline" && <p className="baseline-rule">Si cumple, cierra directamente y suma una vez al repertorio; si no, pasa a Adquisición.</p>}{stage === "acquisition" && <p className="baseline-rule mastery-rule">Al cumplir este criterio se registra el dominio una sola vez, aunque después continúe en Masterizado y Generalizado.</p>}<div><label><span>Métrica</span><select value={criterion.metric} onChange={(event) => onCriterionChange(index, stage, { metric: event.target.value as Criterion["metric"] })}><option value="percentage_correct">{percentageCriterionLabel(target)}</option><option value="correct_count">Cantidad correctas</option><option value="value">Valor de la medición</option></select></label><label><span>Operador</span><select value={criterion.operator} onChange={(event) => onCriterionChange(index, stage, { operator: event.target.value as "gte" | "lte" })}><option value="gte">Mayor o igual (≥)</option><option value="lte">Menor o igual (≤)</option></select></label><label><span>Umbral</span><input type="number" step="any" value={criterion.threshold} onChange={(event) => onCriterionChange(index, stage, { threshold: Number(event.target.value) })}/></label><label><span>Mínimo de {sampleUnitLabel(target)}</span><input type="number" min="0" value={criterion.minTrials} onChange={(event) => onCriterionChange(index, stage, { minTrials: Number(event.target.value) })}/></label><label><span>Sesiones requeridas</span><input type="number" min="1" value={criterion.requiredSessions} onChange={(event) => onCriterionChange(index, stage, { requiredSessions: Number(event.target.value) })}/></label><label><span>Contextos distintos</span><input type="number" min="1" value={criterion.distinctContexts} onChange={(event) => onCriterionChange(index, stage, { distinctContexts: Number(event.target.value) })}/></label><label className="criterion-checkbox"><input type="checkbox" checked={criterion.consecutive} onChange={(event) => onCriterionChange(index, stage, { consecutive: event.target.checked })}/><span>Exigir sesiones consecutivas</span></label><label className="criterion-checkbox"><input type="checkbox" checked={criterion.insufficientSampleBreaksStreak} onChange={(event) => onCriterionChange(index, stage, { insufficientSampleBreaksStreak: event.target.checked })}/><span>Una muestra insuficiente reinicia la secuencia</span></label></div></fieldset>; })}</div></article>;
+      })}</div>
     </section>
     <section className="program-session-config"><div className="modal-section-heading"><span>4</span><div><strong>Configuración de la toma real</strong><p>Define lo que la terapeuta verá y registrará durante la sesión.</p></div></div>
       <div className="session-config-stack">{form.targets.map((target, index) => <article key={target.id || `session-config-${index}`}><header><span className={`target-state ${target.state}`}>{stateLabel(target.state)}</span><strong>{target.code} · {target.name || `Target ${index + 1}`}</strong></header><div className="program-form-grid">
-        <label><span>Tipo de registro</span><select value={target.measurement} onChange={(event) => { const measurement = event.target.value as Measurement; onTargetChange(index, { measurement, unitLabel: unitFor(measurement), criteria: { baseline: defaultCriterion("baseline", measurement), acquisition: defaultCriterion("acquisition", measurement), generalization: defaultCriterion("generalization", measurement), maintenance: defaultCriterion("maintenance", measurement) } }); }}>{(["discrete_trials", "frequency", "duration", "latency", "partial_interval", "task_analysis", "percentage", "occurrence"] as Measurement[]).map((measurement) => <option value={measurement} key={measurement}>{measurementLabel(measurement)}</option>)}</select></label>
+        <div className="clinical-measurement-summary"><small>Configuración de medición</small><strong>{measurementLabel(target)}</strong><span>{measurementDimensionLabel(normalizeMeasurementConfig(target).measurementDimension)}</span></div>
         <label><span>Sonda de mantenimiento cada</span><select value={target.sessionConfig?.maintenanceProbeEveryDays || 7} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, maintenanceProbeEveryDays: Number(event.target.value) } })}>{[1,3,7,14,21,30].map((days) => <option value={days} key={days}>{days} día{days === 1 ? "" : "s"}</option>)}</select></label>
         <label className="field-wide"><span>SD / instrucción antecedente</span><textarea value={target.sessionConfig?.discriminativeStimulus || ""} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, discriminativeStimulus: event.target.value } })} placeholder="La instrucción exacta o condición que antecede la respuesta."/></label>
         <label className="field-wide"><span>Cómo enseñar</span><textarea value={target.sessionConfig?.teachingInstructions || ""} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, teachingInstructions: event.target.value } })} placeholder="Procedimiento, corrección de error y reforzamiento del target."/></label>
-        {target.measurement === "partial_interval" && <label><span>Duración del intervalo</span><select value={target.sessionConfig?.intervalSeconds || 30} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, intervalSeconds: Number(event.target.value) as 10 | 30 | 60 } })}><option value={10}>10 segundos</option><option value={30}>30 segundos</option><option value={60}>60 segundos</option></select></label>}
-        {target.measurement === "task_analysis" && <label className="field-wide"><span>Pasos de la cadena · uno por línea</span><textarea value={(target.sessionConfig?.taskSteps || []).join("\n")} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, taskSteps: event.target.value.split("\n").map((step) => step.trim()).filter(Boolean) } })} placeholder={"1. Primer paso\n2. Segundo paso\n3. Tercer paso"}/></label>}
+        {usesPartialIntervals(target) && <label><span>Duración del intervalo</span><select value={target.sessionConfig?.intervalSeconds || 30} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, intervalSeconds: Number(event.target.value) as 10 | 30 | 60 } })}><option value={10}>10 segundos</option><option value={30}>30 segundos</option><option value={60}>60 segundos</option></select></label>}
+        {usesTaskAnalysis(target) && <label className="field-wide"><span>Pasos de la cadena · uno por línea</span><textarea value={(target.sessionConfig?.taskSteps || []).join("\n")} onChange={(event) => onTargetChange(index, { sessionConfig: { ...target.sessionConfig, taskSteps: event.target.value.split("\n").map((step) => step.trim()).filter(Boolean) } })} placeholder={"1. Primer paso\n2. Segundo paso\n3. Tercer paso"}/></label>}
       </div></article>)}</div>
     </section>
   </div><div className="program-modal-footer"><div className="program-footer-info"><span><BarChart3 size={17}/> Los datos se registran una sola vez y alimentan la gráfica del programa.</span><small className={dirty ? "pending" : "saved"}><Save size={13}/>{draftStatus}</small></div><div><button className="secondary-formation-button" disabled={saving} onClick={onClose}>Cancelar</button><button className="primary-formation-button" disabled={saving} onClick={onSave}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {form.id ? "Guardar cambios" : "Crear programa"}</button></div></div></section></ModalLayer>;

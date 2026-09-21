@@ -13,7 +13,10 @@ const parsed = <T>(v: unknown, fallback: T): T => { try { return typeof v === "s
 const all = async (db: CollectionDatabase, sql: string, ...values: unknown[]) => (await db.prepare(sql).bind(...values).all<Row>()).results;
 const fail = (code: string, message: string, status = 409): never => { throw new CollectionError(code, message, status); };
 function targetFromRow(r: Row): CollectionTarget {
+  const measurementDimension = text(r.measurement_dimension);
+  const recordingFormat = text(r.recording_format);
   return { id: text(r.id), code: text(r.code), name: text(r.name), specificObjective: text(r.specific_objective), measurement: text(r.measurement),
+    ...(measurementDimension && recordingFormat ? { measurementDimension: measurementDimension as CollectionTarget["measurementDimension"], recordingFormat: recordingFormat as CollectionTarget["recordingFormat"] } : {}),
     unitLabel: text(r.unit_label), state: normalizeTargetState(r.state), criteria: normalizeCriteria(r.criteria, text(r.measurement)), sessionConfig: normalizeSessionTargetConfig(r.session_config) };
 }
 function programFromRow(r: Row, targets: Row[]): CollectionProgram {
@@ -59,7 +62,7 @@ export async function prepareMobileCollection(db: CollectionDatabase, actor: Col
     const targetId = text(result.targetId);
     if (!targetId || result.sampled === false || historyByTarget.has(targetId)) continue;
     const details = Array.isArray(result.trialDetails) ? result.trialDetails as Row[] : [];
-    const last = [...details].reverse().find((detail) => ["I", "G", "V", "M", "FP", "FT", "X"].includes(text(detail.responseCode)));
+    const last = [...details].reverse().find((detail) => ["I", "G", "V", "M", "FP", "FT", "X", "O", "N"].includes(text(detail.responseCode)));
     const trials = Array.isArray(result.trials) ? result.trials : [];
     historyByTarget.set(targetId, { date: text(session.session_date), prompt: last ? text(last.responseCode) as CollectionTarget["lastPromptCode"] : trials.length ? (Number(trials.at(-1)) === 1 ? "I" : "X") : null });
   }

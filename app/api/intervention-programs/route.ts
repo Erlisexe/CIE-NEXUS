@@ -25,6 +25,7 @@ import {
   type MasteryEvent,
   type ReplaySession,
   type ReplayTarget,
+  type TrialResponseCode,
 } from "../../../lib/clinical-mastery";
 import {
   DEFAULT_SESSION_NOTE_TEMPLATE,
@@ -35,11 +36,22 @@ import {
   type SessionNoteTemplateSnapshot,
 } from "../../../lib/session-note-templates";
 import { normalizeSessionTargetConfig } from "../../../lib/mobile-collection";
+import { hasValidRequestedMeasurementConfig, isBinaryOpportunityMeasurement, normalizeMeasurementConfig } from "../../../lib/clinical-measurement";
 
 const MEASUREMENTS = new Set(["percentage", "frequency", "duration", "latency", "occurrence", "discrete_trials", "partial_interval", "task_analysis"]);
 const GRAPH_TYPES = new Set(["line", "bar", "cumulative"]);
 const LINE_DESIGNS = new Set(["simple", "AB", "ABA", "ABAB", "BAB", "multiple-baseline", "multielement", "changing-criterion", "custom"]);
 type SessionResult = ClinicalSessionResult;
+
+function requestedMeasurement(raw: Record<string, unknown>) {
+  return normalizeMeasurementConfig(raw);
+}
+
+function validTargetMeasurement(raw: Record<string, unknown>) {
+  if (!hasValidRequestedMeasurementConfig(raw)) return false;
+  const hasCanonical = Boolean(raw.measurementDimension || raw.recordingFormat);
+  return hasCanonical || !textValue(raw.measurement) || MEASUREMENTS.has(textValue(raw.measurement));
+}
 
 function textValue(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -63,17 +75,17 @@ function sanitizeSessionResult(raw: Record<string, unknown>, target: typeof inte
   const rawCorrect = raw.correct === "" || raw.correct === null || raw.correct === undefined ? null : numberValue(raw.correct);
   const correct = trials.length ? trials.reduce<number>((sum, trial) => sum + trial, 0) : rawCorrect;
   let value = sampled && raw.value !== "" && raw.value !== null && raw.value !== undefined ? numberValue(raw.value) : null;
-  if (["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(target.measurement) && correct !== null && opportunities > 0) {
+  if (isBinaryOpportunityMeasurement(target) && correct !== null && opportunities > 0) {
     value = Math.round((correct / opportunities) * 1000) / 10;
   }
   const trialDetails = Array.isArray(raw.trialDetails) ? raw.trialDetails.flatMap((value) => {
     const detail = value && typeof value === "object" ? value as Record<string, unknown> : null;
     const responseCode = textValue(detail?.responseCode);
-    return detail && ["I", "G", "V", "M", "FP", "FT", "X"].includes(responseCode) ? [{ id: textValue(detail.id), at: textValue(detail.at), responseCode: responseCode as "I" | "G" | "V" | "M" | "FP" | "FT" | "X", ...(Number.isInteger(detail.taskStepIndex) ? { taskStepIndex: Number(detail.taskStepIndex), taskStep: textValue(detail.taskStep) } : {}), ...(detail.probe === true ? { probe: true } : {}) }] : [];
+    return detail && ["I", "G", "V", "M", "FP", "FT", "X", "O", "N"].includes(responseCode) ? [{ id: textValue(detail.id), at: textValue(detail.at), responseCode: responseCode as TrialResponseCode, ...(Number.isInteger(detail.taskStepIndex) ? { taskStepIndex: Number(detail.taskStepIndex), taskStep: textValue(detail.taskStep) } : {}), ...(detail.probe === true ? { probe: true } : {}) }] : [];
   }) : [];
   const observations = Array.isArray(raw.observations) ? raw.observations.flatMap((value) => {
     const observation = value && typeof value === "object" ? value as Record<string, unknown> : null;
-    return observation && Number.isFinite(Number(observation.value)) ? [{ id: textValue(observation.id), at: textValue(observation.at), value: Number(observation.value), ...(["I", "G", "V", "M", "FP", "FT", "X"].includes(textValue(observation.responseCode)) ? { responseCode: textValue(observation.responseCode) as "I" | "G" | "V" | "M" | "FP" | "FT" | "X" } : {}) }] : [];
+    return observation && Number.isFinite(Number(observation.value)) ? [{ id: textValue(observation.id), at: textValue(observation.at), value: Number(observation.value), ...(["I", "G", "V", "M", "FP", "FT", "X", "O", "N"].includes(textValue(observation.responseCode)) ? { responseCode: textValue(observation.responseCode) as TrialResponseCode } : {}) }] : [];
   }) : [];
   return {
     targetId: textValue(raw.targetId),
@@ -137,12 +149,17 @@ function serializeProgram(
   return {
     ...program,
     graphConfig: normalizeProgramGraphConfig(program.graphConfig, programTargets),
-    targets: programTargets.map((target) => ({
+    targets: programTargets.map((target) => {
+      const measurement = normalizeMeasurementConfig(target);
+      return {
       ...target,
+      measurementDimension: measurement.measurementDimension,
+      recordingFormat: measurement.recordingFormat,
+      unitLabel: target.unitLabel || measurement.unitLabel,
       state: normalizeTargetState(target.state),
       criteria: normalizeCriteria(target.criteria, target.measurement),
       sessionConfig: normalizeSessionTargetConfig(target.sessionConfig),
-    })),
+    }; }),
     masteryEvents: masteryEvents
       .filter((event) => event.programId === program.id && event.status === "active")
       .map(serializeMasteryEvent),
@@ -355,6 +372,7 @@ export async function POST(request: Request) {
       if (!canAccessProfile(account, profile)) return Response.json({ error: "No tienes acceso al niño seleccionado." }, { status: 403 });
       const invalidTarget = rawTargets.some((target) => !textValue(target.name) || !textValue(target.specificObjective));
       if (invalidTarget) return Response.json({ error: "Cada target necesita nombre y objetivo específico." }, { status: 400 });
+      if (rawTargets.some((target) => !validTargetMeasurement(target))) return Response.json({ error: "Cada target debe tener una dimensión y un formato de registro compatibles." }, { status: 400 });
 
       const programId = crypto.randomUUID();
       const [program] = await db.insert(interventionPrograms).values({
@@ -367,19 +385,24 @@ export async function POST(request: Request) {
         objective,
         instructions: textValue(body.instructions),
       }).returning();
-      const targetRows = rawTargets.map((target, index) => ({
-        id: crypto.randomUUID(),
-        programId,
-        code: textValue(target.code) || `T${String(index + 1).padStart(2, "0")}`,
-        name: textValue(target.name),
-        specificObjective: textValue(target.specificObjective),
-        measurement: MEASUREMENTS.has(textValue(target.measurement)) ? textValue(target.measurement) : "percentage",
-        unitLabel: textValue(target.unitLabel) || "%",
-        state: "baseline",
-        criteria: JSON.stringify(normalizeCriteria(target.criteria, MEASUREMENTS.has(textValue(target.measurement)) ? textValue(target.measurement) : "percentage")),
-        sessionConfig: JSON.stringify(normalizeSessionTargetConfig(target.sessionConfig)),
-        sortOrder: index,
-      }));
+      const targetRows = rawTargets.map((target, index) => {
+        const measurement = requestedMeasurement(target);
+        return {
+          id: crypto.randomUUID(),
+          programId,
+          code: textValue(target.code) || `T${String(index + 1).padStart(2, "0")}`,
+          name: textValue(target.name),
+          specificObjective: textValue(target.specificObjective),
+          measurementDimension: measurement.measurementDimension,
+          recordingFormat: measurement.recordingFormat,
+          measurement: measurement.measurement,
+          unitLabel: measurement.unitLabel,
+          state: "baseline",
+          criteria: JSON.stringify(normalizeCriteria(target.criteria, measurement.measurement)),
+          sessionConfig: JSON.stringify(normalizeSessionTargetConfig(target.sessionConfig)),
+          sortOrder: index,
+        };
+      });
       const targets = await db.insert(interventionTargets).values(targetRows).returning();
       const graphConfig = normalizeProgramGraphConfig(body.graphConfig, targets);
       const [configuredProgram] = await db.update(interventionPrograms).set({ graphConfig: JSON.stringify(graphConfig) }).where(eq(interventionPrograms.id, programId)).returning();
@@ -655,11 +678,12 @@ export async function PUT(request: Request) {
     const existingTargets = await db.select().from(interventionTargets).where(eq(interventionTargets.programId, id));
     const activeMastery = await db.select().from(targetMasteryEvents)
       .where(and(eq(targetMasteryEvents.programId, id), eq(targetMasteryEvents.status, "active")));
+    if (rawTargets.some((target) => !validTargetMeasurement(target))) return Response.json({ error: "Cada target debe tener una dimensión y un formato de registro compatibles." }, { status: 400 });
     const criteriaChangedForMasteredTarget = rawTargets.some((raw) => {
       const existing = existingTargets.find((target) => target.id === textValue(raw.id));
       if (!existing || !activeMastery.some((event) => event.targetId === existing.id)) return false;
-      const measurement = MEASUREMENTS.has(textValue(raw.measurement)) ? textValue(raw.measurement) : "percentage";
-      return JSON.stringify(normalizeCriteria(existing.criteria, existing.measurement)) !== JSON.stringify(normalizeCriteria(raw.criteria, measurement));
+      const measurement = requestedMeasurement(raw);
+      return JSON.stringify(normalizeCriteria(existing.criteria, existing.measurement)) !== JSON.stringify(normalizeCriteria(raw.criteria, measurement.measurement));
     });
     if (criteriaChangedForMasteredTarget && body.confirmMasteryRecalculation !== true) {
       return Response.json({
@@ -691,14 +715,16 @@ export async function PUT(request: Request) {
 
     for (const [index, raw] of rawTargets.entries()) {
       const targetId = textValue(raw.id);
-      const measurement = MEASUREMENTS.has(textValue(raw.measurement)) ? textValue(raw.measurement) : "percentage";
+      const measurement = requestedMeasurement(raw);
       const values = {
         code: textValue(raw.code) || `T${String(index + 1).padStart(2, "0")}`,
         name: textValue(raw.name),
         specificObjective: textValue(raw.specificObjective),
-        measurement,
-        unitLabel: textValue(raw.unitLabel) || "%",
-        criteria: JSON.stringify(normalizeCriteria(raw.criteria, measurement)),
+        measurementDimension: measurement.measurementDimension,
+        recordingFormat: measurement.recordingFormat,
+        measurement: measurement.measurement,
+        unitLabel: measurement.unitLabel,
+        criteria: JSON.stringify(normalizeCriteria(raw.criteria, measurement.measurement)),
         sessionConfig: JSON.stringify(normalizeSessionTargetConfig(raw.sessionConfig)),
         sortOrder: index,
         updatedAt: new Date().toISOString(),

@@ -66,6 +66,7 @@ import {
   type ClinicalSession,
   type ClinicalTarget,
 } from "../../lib/automatic-graphs";
+import { measurementDisplayLabel, sameMeasurementConfig } from "../../lib/clinical-measurement";
 import {
   areasForPackage,
   targetsForPackage,
@@ -726,7 +727,7 @@ export default function GraphManager({
     : validAutomaticTargets.length ? validAutomaticTargets : effectiveAutomaticProgram?.targets.slice(0, 1) || [];
   const effectiveAutomaticTargetIds = effectiveAutomaticTargets.map((target) => target.id);
   const effectiveAutomaticMeasurement = effectiveAutomaticTargets[0]?.measurement || "percentage";
-  const automaticScale = measurementScale(effectiveAutomaticMeasurement);
+  const automaticScale = measurementScale(effectiveAutomaticTargets[0] || effectiveAutomaticMeasurement);
   const cycleOptions = useMemo(() => cycles.map((cycle) => ({ id: cycle.id, profileId: cycle.profileId, label: `${cycle.participantName} · ${cycle.programContext}`, site: cycle.site, status: cycle.status })), [cycles]);
   const profileName = (profileId: string | null) => profiles.find((profile) => profile.id === profileId)?.fullName || "Sin niño vinculado";
   const programName = (programId: string | null) => programs.find((program) => program.id === programId)?.name || "";
@@ -790,7 +791,7 @@ export default function GraphManager({
     title: automaticTitle,
     objective: automaticObjective,
     xAxisLabel: automaticXAxis,
-    yAxisLabel: automaticType === "cumulative" || clinicalScope === "program" && clinicalMetric === "mastered" ? "Targets masterizados" : automaticYAxis || (clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : effectiveAutomaticTargets[0]?.unitLabel || PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement]),
+    yAxisLabel: automaticType === "cumulative" || clinicalScope === "program" && clinicalMetric === "mastered" ? "Targets masterizados" : automaticYAxis || (clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : effectiveAutomaticTargets[0]?.unitLabel || (effectiveAutomaticTargets[0] ? measurementDisplayLabel(effectiveAutomaticTargets[0]) : PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement])),
     config: {
       ...DEFAULT_GRAPH_CONFIG,
       yMin: clinicalScope === "program" && clinicalMetric !== "percentage" ? 0 : automaticScale.yMin,
@@ -1154,7 +1155,7 @@ export default function GraphManager({
       setAutomaticPhases(null);
       return;
     }
-    if (effectiveAutomaticTargets[0] && target.measurement !== effectiveAutomaticTargets[0].measurement) {
+    if (effectiveAutomaticTargets[0] && !sameMeasurementConfig(target, effectiveAutomaticTargets[0])) {
       notify("Para proteger la interpretación clínica, combina únicamente targets con el mismo sistema de medición.");
       return;
     }
@@ -1382,7 +1383,7 @@ export default function GraphManager({
           <article><small>Sesiones representadas</small><strong>{new Set(presentedProgramGraph.points.flatMap((point) => point.value !== null && point.source?.sessionId ? [point.source.sessionId] : [])).size}</strong><span>Dentro del rango seleccionado</span></article>
           <article><small>{automaticType === "cumulative" || clinicalScope === "program" ? "Targets del programa" : "Targets visibles"}</small><strong>{effectiveAutomaticTargets.length}</strong><span>{automaticType === "cumulative" ? "Cada uno aporta como máximo +1" : clinicalScope === "program" ? "Serie agregada sin mezclar unidades" : "Mismo sistema de medición"}</span></article>
           <article><small>{automaticType === "cumulative" ? "Eventos de dominio" : "Datos faltantes"}</small><strong>{automaticType === "cumulative" ? effectiveAutomaticProgram.masteryEvents?.length || 0 : presentedProgramGraph.points.filter((point) => point.value === null).length}</strong><span>{automaticType === "cumulative" ? "Únicos por target" : "Nunca se convierten en cero"}</span></article>
-          <article><small>Medición</small><strong className="metric-text">{automaticType === "cumulative" ? "Dominio acumulado" : clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : PROGRAM_MEASUREMENT_LABELS[effectiveAutomaticMeasurement]}</strong><span>{automaticType === "cumulative" ? "Targets masterizados" : clinicalScope === "program" ? "Fuente: sesiones cerradas" : effectiveAutomaticTargets[0].unitLabel}</span></article>
+          <article><small>Medición</small><strong className="metric-text">{automaticType === "cumulative" ? "Dominio acumulado" : clinicalScope === "program" ? CLINICAL_GRAPH_METRIC_LABELS[clinicalMetric] : measurementDisplayLabel(effectiveAutomaticTargets[0])}</strong><span>{automaticType === "cumulative" ? "Targets masterizados" : clinicalScope === "program" ? "Fuente: sesiones cerradas" : effectiveAutomaticTargets[0].unitLabel}</span></article>
         </div>
         <div className={`automatic-workbench clinical-automatic-workbench ${automaticControlsOpen ? "controls-open" : "controls-closed"}`}>
           <aside className="automatic-control-panel" aria-label="Configuración de la gráfica automática">
@@ -1394,8 +1395,8 @@ export default function GraphManager({
               </fieldset>
               {automaticType === "cumulative" ? <fieldset><legend><Target size={14}/> Repertorio del programa</legend><small className="clinical-control-note">La acumulativa incluye automáticamente cada target masterizado una sola vez. Las selecciones de series no alteran este conteo.</small></fieldset> : clinicalScope === "program" ? <fieldset><legend><Target size={14}/> Programa completo</legend><small className="clinical-control-note">Se suman sólo muestras compatibles con la métrica; los targets de duración o frecuencia no se mezclan con porcentajes discretos. Los datos sin muestra no se convierten en cero.</small></fieldset> : <fieldset><legend><Target size={14}/> Targets / series</legend><div className="automatic-target-picker">{effectiveAutomaticProgram.targets.map((target) => {
                 const selectedTarget = effectiveAutomaticTargetIds.includes(target.id);
-                const incompatible = Boolean(effectiveAutomaticTargets[0] && target.measurement !== effectiveAutomaticTargets[0].measurement && !selectedTarget);
-                return <button type="button" disabled={incompatible} aria-pressed={selectedTarget} className={selectedTarget ? "selected" : ""} onClick={() => toggleAutomaticTarget(target)} key={target.id}><span>{selectedTarget ? <CheckCircle2 size={15}/> : <CircleDashed size={15}/>}</span><div><strong>{target.code} · {target.name}</strong><small>{PROGRAM_MEASUREMENT_LABELS[target.measurement]} · {target.unitLabel}{incompatible ? " · escala diferente" : ""}</small></div></button>;
+                const incompatible = Boolean(effectiveAutomaticTargets[0] && !sameMeasurementConfig(target, effectiveAutomaticTargets[0]) && !selectedTarget);
+                return <button type="button" disabled={incompatible} aria-pressed={selectedTarget} className={selectedTarget ? "selected" : ""} onClick={() => toggleAutomaticTarget(target)} key={target.id}><span>{selectedTarget ? <CheckCircle2 size={15}/> : <CircleDashed size={15}/>}</span><div><strong>{target.code} · {target.name}</strong><small>{measurementDisplayLabel(target)} · {target.unitLabel}{incompatible ? " · escala diferente" : ""}</small></div></button>;
               })}</div></fieldset>}
               <fieldset><legend><Filter size={14}/> Rango y formato</legend>
                 <div className="automatic-date-range"><label><span>Desde</span><input type="date" value={automaticDateFrom} onChange={(event) => setAutomaticDateFrom(event.target.value)}/></label><label><span>Hasta</span><input type="date" value={automaticDateTo} onChange={(event) => setAutomaticDateTo(event.target.value)}/></label></div>

@@ -1,5 +1,6 @@
 import { normalizeCriteria, normalizeTargetState, type ClinicalSessionResult, type TargetCriteria, type TargetState, type TrialResponseCode } from "./clinical-mastery.ts";
 import { missingRequiredSessionNoteFields, type SessionNoteTemplateSnapshot } from "./session-note-templates.ts";
+import { hasValidRequestedMeasurementConfig, isBinaryOpportunityMeasurement, sameMeasurementConfig, usesEventCount, usesObservationClock } from "./clinical-measurement.ts";
 
 export type SessionTargetConfig = {
   discriminativeStimulus: string;
@@ -13,6 +14,9 @@ export type CollectionTarget = {
   code: string;
   name: string;
   measurement: string;
+  /** Canonical fields are optional so legacy drafts and the existing APK stay valid. */
+  measurementDimension?: import("./clinical-measurement.ts").MeasurementDimension;
+  recordingFormat?: import("./clinical-measurement.ts").RecordingFormat;
   unitLabel: string;
   specificObjective: string;
   state: TargetState;
@@ -74,7 +78,7 @@ export class CollectionError extends Error {
 export function isDuplicateTrialTap(previous: { targetId: string; at: number } | null, targetId: string, at: number, windowMs = 420) {
   return Boolean(previous && previous.targetId === targetId && at - previous.at >= 0 && at - previous.at < windowMs);
 }
-export const isDiscrete = (measurement: string) => ["percentage", "occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(measurement);
+export const isDiscrete = (measurement: string | Pick<CollectionTarget, "measurement" | "measurementDimension" | "recordingFormat">) => isBinaryOpportunityMeasurement(typeof measurement === "string" ? { measurement } : measurement);
 export function normalizeSessionTargetConfig(value: unknown): SessionTargetConfig {
   let raw: Record<string, unknown> = {};
   if (typeof value === "string") { try { raw = JSON.parse(value) as Record<string, unknown>; } catch { raw = {}; } }
@@ -120,7 +124,14 @@ export function voidLastObservation(capture: TargetCapture, voidedAt: string, vo
     } : item),
   };
 }
-export function targetDefinition(t: CollectionTarget) { return JSON.stringify([t.id, t.code, t.name, t.specificObjective, t.measurement, t.unitLabel, normalizeCriteria(t.criteria, t.measurement), normalizeSessionTargetConfig(t.sessionConfig)]); }
+export function targetDefinition(t: CollectionTarget) {
+  const definition: unknown[] = [t.id, t.code, t.name, t.specificObjective, t.measurement, t.unitLabel, normalizeCriteria(t.criteria, t.measurement), normalizeSessionTargetConfig(t.sessionConfig)];
+  // Do not alter definitions written by earlier versions.  New targets add a
+  // semantic tail, while a v53 draft for an old target remains byte-for-byte
+  // comparable during a safe recovery.
+  if (t.measurementDimension && t.recordingFormat) definition.push({ measurementDimension: t.measurementDimension, recordingFormat: t.recordingFormat });
+  return JSON.stringify(definition);
+}
 export function programDefinition(p: CollectionProgram) { return JSON.stringify([p.id, p.name, p.objective, p.instructions]); }
 export function templateDefinition(t: SessionNoteTemplateSnapshot) { return JSON.stringify([t.id, t.name, t.description, t.fields.map((f) => [f.id, f.label, f.guidance, f.required])]); }
 export function createCollectionDraft(preparation: CollectionPreparation, id: string, at: string): CollectionDraft {
@@ -131,18 +142,18 @@ export function createCollectionDraft(preparation: CollectionPreparation, id: st
 }
 export function capturedResult(target: CollectionTarget, capture?: TargetCapture): ClinicalSessionResult {
   const events = capture ? activeObservations(capture) : [];
-  const sampled = events.length > 0 || (target.measurement === "frequency" && (capture?.frequencyObservationElapsedMs || 0) > 0);
-  const trials = isDiscrete(target.measurement) ? events.map((e) => e.value as 0 | 1) : [];
+  const sampled = events.length > 0 || (usesObservationClock(target) && (capture?.frequencyObservationElapsedMs || 0) > 0);
+  const trials = isDiscrete(target) ? events.map((e) => e.value as 0 | 1) : [];
   const correct = trials.length ? trials.reduce<number>((n, v) => n + v, 0) : null;
   // Both timers retain the web collector's accumulated measurement in seconds.
   const value = !sampled ? null : trials.length ? Math.round(correct! / trials.length * 1000) / 10 : events.reduce((n, e) => n + e.value, 0);
-  const frequencyObservationSeconds = target.measurement === "frequency" ? Math.max(0, Math.round((capture?.frequencyObservationElapsedMs || 0) / 1000)) : undefined;
+  const frequencyObservationSeconds = usesObservationClock(target) ? Math.max(0, Math.round((capture?.frequencyObservationElapsedMs || 0) / 1000)) : undefined;
   return { targetId: target.id, sampled, value, correct, opportunities: trials.length || (sampled ? capture!.opportunities : 0), trials, note: capture?.note || "",
     stateAtSession: normalizeTargetState(target.state), criterionStatus: "not_evaluated", criterionReason: "",
-    trialDetails: isDiscrete(target.measurement) ? events.map((event) => ({ id: event.id, at: event.at, responseCode: event.responseCode || (event.value === 1 ? "I" : "X"), ...(Number.isInteger(event.taskStepIndex) ? { taskStepIndex: event.taskStepIndex, taskStep: event.taskStep } : {}), ...(event.probe ? { probe: true } : {}) })) : undefined,
+    trialDetails: isDiscrete(target) ? events.map((event) => ({ id: event.id, at: event.at, responseCode: event.responseCode || (event.value === 1 ? "I" : "X"), ...(Number.isInteger(event.taskStepIndex) ? { taskStepIndex: event.taskStepIndex, taskStep: event.taskStep } : {}), ...(event.probe ? { probe: true } : {}) })) : undefined,
     observations: events.map((event) => ({ id: event.id, at: event.at, value: event.value, ...(event.responseCode ? { responseCode: event.responseCode } : {}) })),
     frequencyObservationSeconds,
-    ratePerMinute: target.measurement === "frequency" && frequencyObservationSeconds && value !== null ? Math.round((value / frequencyObservationSeconds) * 6000) / 100 : null };
+    ratePerMinute: usesObservationClock(target) && frequencyObservationSeconds && value !== null ? Math.round((value / frequencyObservationSeconds) * 6000) / 100 : null };
 }
 export function stopCollectionClocks(draft: CollectionDraft, at: string, makeId: () => string): CollectionDraft {
   const end = Date.parse(at);
@@ -179,7 +190,7 @@ export function reviewCollectionConfiguration(draft: CollectionDraft, fresh: Col
     const before = old.programs.flatMap((p) => p.targets).find((t) => t.id === id);
     const after = fresh.programs.flatMap((p) => p.targets).find((t) => t.id === id);
     const sameProgram = old.programs.find((p) => p.targets.some((t) => t.id === id))?.id === fresh.programs.find((p) => p.targets.some((t) => t.id === id))?.id;
-    if (!before || !after || !sameProgram || before.measurement !== after.measurement || before.unitLabel !== after.unitLabel || capture.timerStartedAt) throw new CollectionError("configuration_changed", "Cambió o se retiró una medición. Dirección Clínica debe revisar la configuración; los registros originales se conservan.");
+    if (!before || !after || !sameProgram || !sameMeasurementConfig(before, after) || capture.timerStartedAt) throw new CollectionError("configuration_changed", "Cambió o se retiró una medición. Dirección Clínica debe revisar la configuración; los registros originales se conservan.");
     return [id, { ...capture, definition: targetDefinition(after) }];
   }));
   if (draft.abc.some((a) => a.programId && !fresh.programs.some((p) => p.id === a.programId && (!a.targetId || p.targets.some((t) => t.id === a.targetId))))) throw new CollectionError("configuration_changed", "Un programa o target del ABC ya no está disponible. Se conserva el registro para revisión.");
@@ -240,7 +251,7 @@ export function validateCollectionPayload(raw: unknown): CollectionPayload {
     if (!p || !str(p.id, 100, true) || programIds.has(p.id) || !Array.isArray(p.targets)) fail("Hay programas duplicados o inválidos.");
     programIds.add(p.id);
     for (const t of p.targets) {
-      if (!t || !str(t.id, 100, true) || targetIds.has(t.id) || !["percentage", "occurrence", "discrete_trials", "frequency", "duration", "latency", "partial_interval", "task_analysis"].includes(t.measurement)) fail("Hay targets duplicados o inválidos.");
+      if (!t || !str(t.id, 100, true) || targetIds.has(t.id) || !["percentage", "occurrence", "discrete_trials", "frequency", "duration", "latency", "partial_interval", "task_analysis"].includes(t.measurement) || !hasValidRequestedMeasurementConfig(t)) fail("Hay targets duplicados o inválidos.");
       targetIds.add(t.id);
       const c = body.captures[t.id]; if (!c) continue;
       if (c.targetId !== t.id || !str(c.definition, 20000, true) || !Array.isArray(c.observations) || c.observations.length > 10000 || !str(c.note, 12000) || c.timerStartedAt !== null || c.frequencyObservationStartedAt || !Number.isInteger(c.opportunities) || c.opportunities < 0) fail("Detén los cronómetros y revisa los registros del target.");
@@ -253,13 +264,13 @@ export function validateCollectionPayload(raw: unknown): CollectionPayload {
         if (e.removedAt && (Date.parse(e.removedAt) < Date.parse(e.at) || Date.parse(e.removedAt) > Date.parse(body.endedAt!) + 1000)) fail("La anulación de un ensayo está fuera del horario de la sesión.");
         if (e.voidedAt && (Date.parse(e.voidedAt) < Date.parse(e.at) || Date.parse(e.voidedAt) > Date.parse(body.endedAt!) + 1000)) fail("La anulación de un ensayo está fuera del horario de la sesión.");
         if (e.removedAt && !explicitVoid) Object.assign(e, { voided: true, voidedAt: e.removedAt, voidedByAccountId: body.preparation.professionalAccountId, voidReason: "undo_last_trial" as const });
-        if (isDiscrete(t.measurement) && e.value !== 0 && e.value !== 1) fail("Los ensayos discretos sólo admiten 1 o 0.");
-        if (e.responseCode && !["I", "G", "V", "M", "FP", "FT", "X"].includes(e.responseCode)) fail("Un nivel de ayuda no es válido.");
+        if (isDiscrete(t) && e.value !== 0 && e.value !== 1) fail("Los registros por oportunidad sólo admiten 1 o 0.");
+        if (e.responseCode && !["I", "G", "V", "M", "FP", "FT", "X", "O", "N"].includes(e.responseCode)) fail("El código de respuesta no es válido.");
         if (e.taskStepIndex !== undefined && (!Number.isInteger(e.taskStepIndex) || e.taskStepIndex < 0 || e.taskStepIndex > 99 || !str(e.taskStep || "", 500))) fail("Un paso del análisis de tarea no es válido.");
-        if (t.measurement === "frequency" && !Number.isInteger(e.value)) fail("La frecuencia debe ser un número entero.");
+        if (usesEventCount(t) && !Number.isInteger(e.value)) fail("El conteo de ocurrencias debe ser un número entero.");
         eventIds.add(e.id);
       }
-      if (isDiscrete(t.measurement) && activeObservations(c).length !== c.opportunities) fail("Los ensayos visibles y el total de oportunidades no coinciden.");
+      if (isDiscrete(t) && activeObservations(c).length !== c.opportunities) fail("Los registros visibles y el total de oportunidades no coinciden.");
     }
   }
   if (Object.keys(body.captures).some((id) => !targetIds.has(id))) fail("Hay datos de un target ajeno a la sesión.");

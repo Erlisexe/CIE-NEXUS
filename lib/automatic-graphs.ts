@@ -10,6 +10,7 @@ import {
   type PhaseBoundary,
 } from "./graph-types.ts";
 import { buildCumulativeMasteryTimeline, TARGET_STATE_LABELS } from "./clinical-mastery.ts";
+import { isBinaryOpportunityMeasurement, measurementDisplayLabel, usesObservationClock, type MeasurementDimension, type RecordingFormat } from "./clinical-measurement.ts";
 
 export type ClinicalTargetState = "baseline" | "acquisition" | "generalization" | "maintenance" | "closed";
 export type ClinicalMeasurement = "percentage" | "frequency" | "duration" | "latency" | "occurrence" | "discrete_trials" | "partial_interval" | "task_analysis";
@@ -20,6 +21,8 @@ export type ClinicalTarget = {
   name: string;
   specificObjective: string;
   measurement: ClinicalMeasurement;
+  measurementDimension?: MeasurementDimension;
+  recordingFormat?: RecordingFormat;
   unitLabel: string;
   state: ClinicalTargetState;
   masteryAchieved?: boolean;
@@ -92,15 +95,14 @@ export const CLINICAL_MEASUREMENT_LABELS: Record<ClinicalMeasurement, string> = 
   frequency: "Frecuencia",
   duration: "Duración",
   latency: "Latencia",
-  occurrence: "Ensayos discretos",
-  discrete_trials: "Ensayos discretos",
+  occurrence: "Registro de ocurrencia (sí/no por oportunidad)",
+  discrete_trials: "Ensayo por ensayo con nivel de ayuda",
   partial_interval: "Intervalo parcial",
   task_analysis: "Análisis de tarea",
 };
 
-export function measurementScale(measurement: ClinicalMeasurement) {
-  if (measurement === "percentage") return { yMin: 0, yMax: 100, cumulative: false };
-  if (["occurrence", "discrete_trials", "partial_interval", "task_analysis"].includes(measurement)) return { yMin: 0, yMax: 100, cumulative: false };
+export function measurementScale(measurement: ClinicalMeasurement | Pick<ClinicalTarget, "measurement" | "measurementDimension" | "recordingFormat">) {
+  if (isBinaryOpportunityMeasurement(typeof measurement === "string" ? { measurement } : measurement)) return { yMin: 0, yMax: 100, cumulative: false };
   return { yMin: 0, yMax: null, cumulative: false };
 }
 
@@ -108,9 +110,6 @@ function dateLabel(value: string) {
   const [year, month, day] = value.split("-");
   return year && month && day ? `${day}/${month}/${year.slice(2)}` : value;
 }
-
-// Partial-interval occurrence is a different construct from independent/correct discrete responses.
-const TRIAL_MEASUREMENTS = new Set<ClinicalMeasurement>(["percentage", "occurrence", "discrete_trials", "task_analysis"]);
 
 export const CLINICAL_GRAPH_METRIC_LABELS: Record<ClinicalGraphMetric, string> = {
   percentage: "% de respuestas independientes/correctas",
@@ -156,11 +155,11 @@ function buildProgramPoints(program: ClinicalProgram, sessions: ClinicalSession[
       for (const result of session.results) {
         const target = targetMap.get(result.targetId);
         if (!target || !result.sampled) continue;
-        const trials = TRIAL_MEASUREMENTS.has(target.measurement) && Number.isFinite(result.correct) && Number.isFinite(result.opportunities) && (result.opportunities || 0) > 0;
+        const trials = isBinaryOpportunityMeasurement(target) && Number.isFinite(result.correct) && Number.isFinite(result.opportunities) && (result.opportunities || 0) > 0;
         if (metric === "percentage" && trials) { numerator += result.correct!; denominator += result.opportunities!; samples++; }
         if (metric === "count" && trials) { numerator += result.correct!; denominator += result.opportunities!; samples++; }
         if (metric === "opportunities" && trials) { numerator += result.opportunities!; denominator += result.opportunities!; samples++; }
-        if (metric === "rate" && target.measurement === "frequency" && Number.isFinite(result.value) && (result.frequencyObservationSeconds || 0) > 0) {
+        if (metric === "rate" && usesObservationClock(target) && Number.isFinite(result.value) && (result.frequencyObservationSeconds || 0) > 0) {
           numerator += result.value!;
           denominator += result.frequencyObservationSeconds!;
           samples++;
@@ -255,7 +254,7 @@ export function buildSessionGraph({
     .filter((session) => !config.dateTo || session.sessionDate <= config.dateTo)
     .sort(sessionSort);
   const measurement = targets[0]?.measurement || "percentage";
-  const scale = measurementScale(measurement);
+  const scale = measurementScale(targets[0] || measurement);
   const programScope = config.clinicalScope === "program";
   const metric = graphType === "cumulative" ? "mastered" : config.clinicalMetric;
   if (graphType === "cumulative" || programScope && metric === "mastered") {
@@ -375,9 +374,9 @@ export function buildSessionGraph({
     objective,
     graphType,
     designType,
-    measurement: CLINICAL_MEASUREMENT_LABELS[measurement],
+    measurement: targets[0] ? measurementDisplayLabel(targets[0]) : CLINICAL_MEASUREMENT_LABELS[measurement],
     xAxisLabel,
-    yAxisLabel: yAxisLabel || targets[0]?.unitLabel || CLINICAL_MEASUREMENT_LABELS[measurement],
+    yAxisLabel: yAxisLabel || targets[0]?.unitLabel || (targets[0] ? measurementDisplayLabel(targets[0]) : CLINICAL_MEASUREMENT_LABELS[measurement]),
     linkedCycleId: null,
     status: "active",
     points,

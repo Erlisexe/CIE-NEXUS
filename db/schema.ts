@@ -187,6 +187,10 @@ export const interventionTargets = sqliteTable("intervention_targets", {
   code: text("code").notNull(),
   name: text("name").notNull(),
   specificObjective: text("specific_objective").notNull(),
+  // Canonical taxonomy. `measurement` remains for historic records and older
+  // mobile clients; new definitions use these two fields together.
+  measurementDimension: text("measurement_dimension").notNull().default(""),
+  recordingFormat: text("recording_format").notNull().default(""),
   measurement: text("measurement").notNull().default("percentage"),
   unitLabel: text("unit_label").notNull().default("%"),
   state: text("state").notNull().default("baseline"),

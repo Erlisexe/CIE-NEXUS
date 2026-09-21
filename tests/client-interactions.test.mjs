@@ -65,6 +65,19 @@ test('las ventanas clínicas usan el límite compartido de foco y Escape', () =>
   assert.match(collector, /real-save-feedback" role="alert"/);
 });
 
+test('la configuración clínica separa dimensión, formato y registro por oportunidad', () => {
+  const editor = readFileSync(new URL('../app/components/intervention-session-manager.tsx', import.meta.url), 'utf8');
+  const collector = readFileSync(new URL('../app/components/real-session-collector.tsx', import.meta.url), 'utf8');
+  const taxonomy = readFileSync(new URL('../lib/clinical-measurement.ts', import.meta.url), 'utf8');
+  assert.match(editor, /Dimensión de medición/);
+  assert.match(editor, /Formato de registro/);
+  assert.match(editor, /El porcentaje es un resultado derivado/);
+  assert.doesNotMatch(editor, /Porcentaje \/ ensayos/);
+  assert.match(taxonomy, /Registro de ocurrencia \(sí\/no por oportunidad\)/);
+  assert.match(collector, /recordTrial\("O"\)/);
+  assert.match(collector, /recordTrial\("N"\)/);
+});
+
 test('las fuentes se sirven como activos públicos y no como rutas de la máquina de build', () => {
   const layout=readFileSync(new URL('../app/layout.tsx',import.meta.url),'utf8');
   const css=readFileSync(new URL('../app/accessibility.css',import.meta.url),'utf8');

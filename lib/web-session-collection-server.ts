@@ -72,14 +72,14 @@ function validateActiveDraft(raw: unknown, stored: CollectionDraft, actor: Colle
     observations += capture.observations.length;
     if (observations > 10000) fail("draft_too_large", "La sesión contiene demasiados eventos; ciérrala antes de continuar.", 413);
     for (const event of capture.observations) {
-      if (!event || !isUuid(event.id) || !isIso(event.at) || !Number.isFinite(event.value) || event.value < 0 || (event.removedAt && !isIso(event.removedAt)) || (event.responseCode && !["I", "G", "V", "M", "FP", "FT", "X"].includes(event.responseCode))) fail("invalid_draft", "Un evento del target no es válido.");
+      if (!event || !isUuid(event.id) || !isIso(event.at) || !Number.isFinite(event.value) || event.value < 0 || (event.removedAt && !isIso(event.removedAt)) || (event.responseCode && !["I", "G", "V", "M", "FP", "FT", "X", "O", "N"].includes(event.responseCode))) fail("invalid_draft", "Un evento del target no es válido.");
       const explicitVoid = Boolean(event.voided || event.voidedAt || event.voidedByAccountId || event.voidReason);
       if (explicitVoid && (event.voided !== true || !isIso(event.voidedAt) || event.voidedByAccountId !== actor.id || event.voidReason !== "undo_last_trial" || (event.removedAt && event.removedAt !== event.voidedAt))) fail("invalid_draft", "Un ensayo anulado no conserva fecha, autor y motivo válidos.");
       if (event.removedAt && Date.parse(event.removedAt) < Date.parse(event.at)) fail("invalid_draft", "La anulación no puede ser anterior al ensayo.");
       if (event.removedAt && !explicitVoid) Object.assign(event, { voided: true, voidedAt: event.removedAt, voidedByAccountId: actor.id, voidReason: "undo_last_trial" as const });
     }
     const target = targets.find((item) => item.id === targetId);
-    if (target && isDiscrete(target.measurement) && activeObservations(capture).length !== capture.opportunities) fail("invalid_draft", "Los ensayos visibles y el total de oportunidades no coinciden.");
+    if (target && isDiscrete(target) && activeObservations(capture).length !== capture.opportunities) fail("invalid_draft", "Los registros visibles y el total de oportunidades no coinciden.");
   }
   if (!Array.isArray(draft.abc) || draft.abc.length > 1000 || draft.abc.some((item) => !item || !isUuid(item.id) || !isIso(item.at) || !item.antecedent?.trim() || !item.behavior?.trim() || !item.consequence?.trim() || !Number.isInteger(item.intensity) || Number(item.intensity) < 1 || Number(item.intensity) > 5)) fail("invalid_draft", "Revisa los registros ABC de la sesión.");
   if (!draft.noteValues || typeof draft.noteValues !== "object" || Object.entries(draft.noteValues).some(([id, value]) => !draft.template.fields.some((field) => field.id === id) || typeof value !== "string" || value.length > 12000)) fail("invalid_draft", "La nota de sesión no tiene un formato válido.");

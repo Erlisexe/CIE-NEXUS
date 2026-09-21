@@ -14,6 +14,7 @@ import {
 import { apiAccountGuard, canAccessChild, hasPermission, visibleProfileIds, type AppAccount } from "../../../lib/access-control";
 import { normalizeGraph } from "../../../lib/graph-types";
 import { buildSessionGraph, type ClinicalMeasurement, type ClinicalSession, type ClinicalTargetState } from "../../../lib/automatic-graphs";
+import { normalizeMeasurementConfig } from "../../../lib/clinical-measurement";
 import { signedProfilePhotoMap } from "../../../lib/profile-photos";
 import {
   BUILT_IN_REPORT_TEMPLATES,
@@ -247,12 +248,17 @@ async function reportSources(account: AppAccount, profileId: string) {
       program: {
         ...program,
         graphConfig: parsed(program.graphConfig, undefined),
-        targets: targetRows.filter((target) => target.programId === program.id).map((target) => ({
-          ...target,
-          measurement: target.measurement as ClinicalMeasurement,
-          state: target.state as ClinicalTargetState,
-          criteria: parsed(target.criteria, {}),
-        })),
+        targets: targetRows.filter((target) => target.programId === program.id).map((target) => {
+          const measurement = normalizeMeasurementConfig(target);
+          return {
+            ...target,
+            measurement: target.measurement as ClinicalMeasurement,
+            measurementDimension: measurement.measurementDimension,
+            recordingFormat: measurement.recordingFormat,
+            state: target.state as ClinicalTargetState,
+            criteria: parsed(target.criteria, {}),
+          };
+        }),
         masteryEvents: masteryRows.filter((event) => event.programId === program.id && event.status === "active").map((event) => ({
           ...event,
           masteryMethod: event.masteryMethod as "baseline" | "acquisition",
