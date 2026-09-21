@@ -39,6 +39,22 @@ export function useCollection(session: Session) {
     } catch (e) { setStorageError("No se pudo guardar en el teléfono. No cierres la aplicación; libera espacio y vuelve a intentar."); throw e; }
   }, [vault]);
 
+  const discard = useCallback((id: string) => {
+    if (!vault) throw new Error("El guardado local todavía no está disponible.");
+    const draft = draftRef.current.find((item) => item.id === id);
+    if (!draft || draft.status !== "active") throw new Error("Solo se puede descartar una sesión activa y vacía.");
+    try {
+      vault.removeDraft(id);
+      const next = draftRef.current.filter((item) => item.id !== id);
+      draftRef.current = next;
+      setDrafts(next);
+      setStorageError("");
+    } catch (e) {
+      setStorageError("No se pudo descartar el borrador vacío.");
+      throw e;
+    }
+  }, [vault]);
+
   const synchronize = useCallback(async () => {
     if (!vault || busy.current || !active.current || AppState.currentState !== "active") return;
     busy.current = true; setSyncing(true);
@@ -74,6 +90,6 @@ export function useCollection(session: Session) {
     void synchronize();
     return () => { clearInterval(timer); appState.remove(); };
   }, [vault, synchronize]);
-  return { vault, drafts, storageError, syncing, save, synchronize };
+  return { vault, drafts, storageError, syncing, save, discard, synchronize };
 }
 export type CollectionController = ReturnType<typeof useCollection>;

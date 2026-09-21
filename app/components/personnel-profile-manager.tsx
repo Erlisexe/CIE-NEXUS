@@ -1,5 +1,9 @@
 "use client";
 
+import { StartTodaySessionButton } from "./today-session-launcher";
+
+import ModalLayer from "./modal-layer";
+
 import {
   Archive,
   Building2,
@@ -56,6 +60,7 @@ export type PersonnelProfile = {
   evaluationCount: number;
   programCount: number;
   sessionCount: number;
+  programRecordCount?: number;
   responsibleAccountIds?: ResponsibleAccountIds;
   responsibles?: LinkableAccount[];
   createdAt: string;
@@ -80,11 +85,14 @@ export default function PersonnelProfileManager({
   linkableAccounts,
   canManage,
   selectedProfileId,
+  selectedSite,
+  onSelectSite,
   onSelect,
   onProfilesChange,
   onOpenPrograms,
   onOpenEvaluations,
   onOpenSessions,
+  onStartTodaySession,
   onOpenGraphs,
   onOpenProgramGraph,
   onOpenABC,
@@ -96,11 +104,14 @@ export default function PersonnelProfileManager({
   linkableAccounts: LinkableAccount[];
   canManage: boolean;
   selectedProfileId: string;
+  selectedSite?: string;
+  onSelectSite?: (site: string) => void;
   onSelect: (id: string) => void;
   onProfilesChange: (profiles: PersonnelProfile[]) => void;
   onOpenPrograms: () => void;
   onOpenEvaluations: () => void;
   onOpenSessions: () => void;
+  onStartTodaySession?: (profileId: string) => void;
   onOpenGraphs: () => void;
   onOpenProgramGraph: (programId: string) => void;
   onOpenABC: () => void;
@@ -108,7 +119,9 @@ export default function PersonnelProfileManager({
   notify: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [site, setSite] = useState("Todas");
+  const [localSite, setLocalSite] = useState("Todas");
+  const site = selectedSite ?? localSite;
+  const setSite = onSelectSite || setLocalSite;
   const [showArchived, setShowArchived] = useState(false);
   const [draft, setDraft] = useState<ChildDraft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -202,10 +215,10 @@ export default function PersonnelProfileManager({
   }
 
   const roleOptions = (role: AppRole) => linkableAccounts.filter((item) => item.role === role);
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) || null;
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId && (site === "Todas" || profile.site === site)) || null;
 
   return <>
-    {selectedProfile ? <ChildProfileWorkspace key={selectedProfile.id} profile={selectedProfile} canManage={canManage} onBack={() => onSelect("all")} onEdit={() => openEdit(selectedProfile)} onOpenEvaluations={onOpenEvaluations} onOpenPrograms={onOpenPrograms} onOpenSessions={onOpenSessions} onOpenGraphs={onOpenGraphs} onOpenProgramGraph={onOpenProgramGraph} onOpenABC={onOpenABC} onOpenReports={onOpenReports} onPhotoChange={(photoUrl) => onProfilesChange(profiles.map((item) => item.id === selectedProfile.id ? { ...item, photoUrl } : item))} notify={notify}/> : <>
+    {selectedProfile ? <ChildProfileWorkspace key={selectedProfile.id} profile={selectedProfile} canManage={canManage} onBack={() => onSelect("all")} onEdit={() => openEdit(selectedProfile)} onOpenEvaluations={onOpenEvaluations} onOpenPrograms={onOpenPrograms} onOpenSessions={onOpenSessions} onStartTodaySession={onStartTodaySession} onOpenGraphs={onOpenGraphs} onOpenProgramGraph={onOpenProgramGraph} onOpenABC={onOpenABC} onOpenReports={onOpenReports} onPhotoChange={(photoUrl) => onProfilesChange(profiles.map((item) => item.id === selectedProfile.id ? { ...item, photoUrl } : item))} notify={notify}/> : <>
     <div className="formation-heading">
       <div><p className="section-kicker">Directorio clínico</p><h1>Niños organizados por sede</h1><p>Cada niño reúne sus evaluaciones, programas y sesiones, con responsables clínicos claramente vinculados.</p></div>
       {canManage && <button className="primary-formation-button" onClick={() => setDraft(blankChild(site === "Todas" ? sites[0] || "León" : site))}><Plus size={17}/> Agregar niño</button>}
@@ -228,6 +241,7 @@ export default function PersonnelProfileManager({
         <div className="profile-counts"><div><strong>{profile.evaluationCount || 0}</strong><small>Evaluaciones</small></div><div><strong>{profile.programCount || 0}</strong><small>Programas</small></div><div><strong>{profile.sessionCount || 0}</strong><small>Sesiones</small></div></div>
         {(profile.responsibles || []).length > 0 && <div className="child-responsibles">{profile.responsibles?.map((responsible) => <span key={responsible.id}><strong>{roleLabel(responsible.role)}</strong>{responsible.displayName}</span>)}</div>}
         {profile.notes && <p className="profile-notes">{profile.notes}</p>}
+        {profile.status === "active" && onStartTodaySession && <StartTodaySessionButton className="primary-formation-button child-start-session" onClick={() => onStartTodaySession(profile.id)}/>}
         <footer>{profile.status === "active" ? <><button className="profile-open" onClick={() => onSelect(profile.id)}><FolderOpen size={15}/> Abrir expediente</button>{canManage && <button title="Archivar niño" aria-label={`Archivar a ${profile.fullName}`} onClick={() => changeStatus(profile, "archive")}><Archive size={15}/></button>}</> : canManage ? <button className="profile-open" onClick={() => changeStatus(profile, "restore")}><RotateCcw size={15}/> Restaurar</button> : null}{canManage && <button className="danger-action" title="Eliminar niño" aria-label={`Eliminar a ${profile.fullName}`} onClick={() => { setDeleteTarget(profile); setDeleteText(""); }}><Trash2 size={15}/></button>}</footer>
       </article>)}</div></section>;
     })}</div> : <div className="intervention-empty"><CircleDashed size={30}/><strong>{showArchived ? "No hay niños archivados" : "Aún no hay niños en esta vista"}</strong><p>{canManage ? "Agrega el primer niño para vincularle evaluaciones, programas y sesiones." : "No hay niños disponibles dentro de tu alcance actual."}</p>{canManage && <button className="primary-formation-button" onClick={() => setDraft(blankChild(site === "Todas" ? sites[0] || "León" : site))}><Plus size={16}/> Agregar primer niño</button>}</div>}
@@ -235,7 +249,7 @@ export default function PersonnelProfileManager({
     {selectedProfileId !== "all" && profiles.some((profile) => profile.id === selectedProfileId) && <section className="selected-profile-actions"><CheckCircle2 size={20}/><div><strong>Niño seleccionado</strong><p>Las nuevas evaluaciones, programas y sesiones se asignarán a este niño.</p></div><button onClick={onOpenEvaluations}><ClipboardCheck size={15}/> Evaluaciones</button><button onClick={onOpenPrograms}><Play size={15}/> Programas</button></section>}
     </>}
 
-    {draft && <div className="modal-backdrop"><section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="child-modal-title"><div className="modal-title"><div><p className="section-kicker">Caso clínico</p><h2 id="child-modal-title">{draft.id ? "Editar niño" : "Agregar niño"}</h2></div><button aria-label="Cerrar" onClick={() => setDraft(null)}><X size={19}/></button></div><p className="modal-intro">Este registro organiza la información clínica del niño. Los profesionales vinculados necesitan además los permisos correspondientes a su rol.</p><div className="profile-form-grid">
+    {draft && <ModalLayer onDismiss={() => setDraft(null)} className="modal-backdrop"><section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="child-modal-title"><div className="modal-title"><div><p className="section-kicker">Caso clínico</p><h2 id="child-modal-title">{draft.id ? "Editar niño" : "Agregar niño"}</h2></div><button aria-label="Cerrar" onClick={() => setDraft(null)}><X size={19}/></button></div><p className="modal-intro">Este registro organiza la información clínica del niño. Los profesionales vinculados necesitan además los permisos correspondientes a su rol.</p><div className="profile-form-grid">
       <label className="field-wide"><span>Nombre completo</span><input autoFocus value={draft.fullName} onChange={(event) => setDraft({ ...draft, fullName: event.target.value })} placeholder="Nombre y apellido"/></label>
       <label><span>Sede</span><select value={draft.site} onChange={(event) => setDraft({ ...draft, site: event.target.value })}>{sites.map((item) => <option key={item}>{item}</option>)}</select></label>
       <label><span>Código interno (opcional)</span><input value={draft.internalCode} onChange={(event) => setDraft({ ...draft, internalCode: event.target.value })} placeholder="Ej. NNA-LE-001"/></label>
@@ -250,8 +264,8 @@ export default function PersonnelProfileManager({
       {(["coordinador", "supervisor", "subdirector"] as const).map((role) => <label key={role}><span>{roleLabel(role)} responsable</span><select value={draft.responsibleAccountIds[role] || ""} onChange={(event) => setDraft({ ...draft, responsibleAccountIds: { ...draft.responsibleAccountIds, [role]: event.target.value || null } })}><option value="">Sin vincular</option>{roleOptions(role).map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select></label>)}
       <div className="field-wide custom-fields-editor"><div><span>Casillas personalizadas</span><button type="button" onClick={() => setDraft({ ...draft, customFields: [...draft.customFields, { id: crypto.randomUUID(), label: "", value: "" }] })}><Plus size={14}/> Agregar casilla</button></div>{draft.customFields.length ? draft.customFields.map((field, index) => <div className="custom-field-row" key={field.id}><input aria-label={`Nombre de casilla ${index + 1}`} value={field.label} onChange={(event) => setDraft({ ...draft, customFields: draft.customFields.map((item) => item.id === field.id ? { ...item, label: event.target.value } : item) })} placeholder="Nombre de la casilla"/><input aria-label={`Valor de casilla ${index + 1}`} value={field.value} onChange={(event) => setDraft({ ...draft, customFields: draft.customFields.map((item) => item.id === field.id ? { ...item, value: event.target.value } : item) })} placeholder="Valor"/><button aria-label="Eliminar casilla" type="button" onClick={() => setDraft({ ...draft, customFields: draft.customFields.filter((item) => item.id !== field.id) })}><Trash2 size={15}/></button></div>) : <p>Agrega datos adicionales propios del centro sin cambiar la estructura del expediente.</p>}</div>
       <label className="field-wide"><span>Nota administrativa (opcional)</span><textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} placeholder="Información breve que ayude a identificar el caso."/></label>
-    </div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setDraft(null)}>Cancelar</button><button className="primary-formation-button" disabled={saving} onClick={saveChild}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar niño</button></div></section></div>}
+    </div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setDraft(null)}>Cancelar</button><button className="primary-formation-button" disabled={saving} onClick={saveChild}>{saving ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} Guardar niño</button></div></section></ModalLayer>}
 
-    {deleteTarget && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true"><span className="danger-mark"><Trash2 size={22}/></span><h2>Eliminar niño permanentemente</h2><p>Se eliminarán <strong>{deleteTarget.fullName}</strong>, sus {deleteTarget.evaluationCount || 0} evaluaciones, {deleteTarget.programCount || 0} programas y {deleteTarget.sessionCount || 0} sesiones. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={saving || deleteText.trim().toUpperCase() !== "ELIMINAR"} onClick={deleteChild}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></div>}
+    {deleteTarget && <ModalLayer onDismiss={() => setDeleteTarget(null)} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true"><span className="danger-mark"><Trash2 size={22}/></span><h2>Eliminar niño permanentemente</h2><p>Se eliminarán <strong>{deleteTarget.fullName}</strong>, sus {deleteTarget.evaluationCount || 0} evaluaciones, {deleteTarget.programCount || 0} programas y {deleteTarget.sessionCount || 0} sesiones. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)}/></label><div><button className="secondary-formation-button" onClick={() => setDeleteTarget(null)}>Cancelar</button><button className="danger-button" disabled={saving || deleteText.trim().toUpperCase() !== "ELIMINAR"} onClick={deleteChild}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></ModalLayer>}
   </>;
 }

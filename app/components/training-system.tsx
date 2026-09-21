@@ -1,4 +1,9 @@
 "use client";
+
+import { clientRequest } from "../../lib/client-request";
+
+import ModalLayer from "./modal-layer";
+import ToastNotice from "./toast-notice";
 /* eslint-disable @next/next/no-img-element */
 
 import {
@@ -47,10 +52,14 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PackageManager from "./package-manager";
 import GraphManager from "./graph-manager";
 import InterventionSessionManager from "./intervention-session-manager";
+import TodaySessionLauncher from "./today-session-launcher";
+import ClinicalScopeControls from "./clinical-scope-controls";
+import { summarizeClosedSessions } from "../../lib/clinical-session-runs";
+import { matchesClinicalFilter, profileMatchesClinicalFilter } from "../../lib/clinical-filter";
 import PersonnelProfileManager, { type LinkableAccount, type PersonnelProfile } from "./personnel-profile-manager";
 import FormationManager from "./formation-manager";
 import AccountManager from "./account-manager";
@@ -169,6 +178,8 @@ type DashboardProgram = {
 
 type DashboardSession = {
   id: string;
+  clinicalSessionRunId?: string | null;
+  status: string;
   programId: string;
   sessionDate: string;
   context: string;
@@ -309,6 +320,27 @@ function BrandImageCard({
 
 export default function TrainingSystem({ account }: { account: AppAccount }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const menu = menuRef.current;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const viewport = window.matchMedia("(max-width: 820px)");
+    const controls = () => Array.from(menu?.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled)') || []).filter(element => element.getClientRects().length && getComputedStyle(element).visibility !== "hidden");
+    controls()[0]?.focus();
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setMenuOpen(false); }
+      if (event.key === "Tab") {
+        const items = controls();
+        if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items.at(-1)?.focus(); }
+        else if (!event.shiftKey && document.activeElement === items.at(-1)) { event.preventDefault(); items[0]?.focus(); }
+      }
+    };
+    const resize = () => { if (!viewport.matches) setMenuOpen(false); };
+    document.addEventListener("keydown", keydown);
+    viewport.addEventListener("change", resize);
+    return () => { document.removeEventListener("keydown", keydown); viewport.removeEventListener("change", resize); previous?.focus({ preventScroll: true }); };
+  }, [menuOpen]);
   const [active, setActive] = useState("Inicio");
   const [records, setRecords] = useState<TrainingCycle[]>([]);
   const [profiles, setProfiles] = useState<PersonnelProfile[]>([]);
@@ -317,6 +349,22 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageRevision, setMessageRevision] = useState(0);
+  const flash = useCallback((text: string) => {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    const safeMessage = /failed query|too many sql variables|too many variables|TEST-TARGET/i.test(normalized) || normalized.length > 280
+      ? "No se pudo completar la carga. Intenta nuevamente."
+      : normalized;
+    setMessage(safeMessage);
+    setMessageRevision(current => current + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = setTimeout(() => setMessage(""), 7000);
+    return () => clearTimeout(timer);
+  }, [message, messageRevision]);
+
   const [newOpen, setNewOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TrainingCycle | null>(null);
@@ -335,6 +383,8 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const [passwordSending, setPasswordSending] = useState(false);
   const [appointmentToOpen, setAppointmentToOpen] = useState<CalendarAppointment | null>(null);
   const [sessionHistoryOnly, setSessionHistoryOnly] = useState(false);
+  const [todaySession, setTodaySession] = useState<{ profileId: string; profileName: string; appointmentId?: string } | null>(null);
+  const [todaySessionRevision, setTodaySessionRevision] = useState(0);
   const [selectedGraphProgramId, setSelectedGraphProgramId] = useState<string | null>(null);
   const [abcQuickContext, setAbcQuickContext] = useState<{ profileId: string; profileName: string; programId?: string | null; sessionId?: string | null; appointmentId?: string | null } | null>(null);
   const consumeAppointment = useCallback(() => setAppointmentToOpen(null), []);
@@ -351,10 +401,10 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const [form, setForm] = useState({ profileId: "", site: "León", participantName: "", role: "Niño", programContext: "", routeType: "4A" as "4A" | "4B", packageTemplateId: DEFAULT_EVALUATION_PACKAGE.id, sourceCycleId: null as string | null });
 
   const selected = useMemo(() => records.find((record) => record.id === selectedId) ?? null, [records, selectedId]);
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
-  const scopedRecords = records.filter((record) => selectedProfileId !== "all"
-    ? record.profileId === selectedProfileId
-    : selectedSite === "Todas" || record.site === selectedSite);
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId && (selectedSite === "Todas" || profile.site === selectedSite)) ?? null;
+  const clinicalFilter = { site: selectedSite, profileId: selectedProfileId };
+  const clinicalProfiles = profiles.filter((profile) => profileMatchesClinicalFilter(profile, clinicalFilter));
+  const scopedRecords = records.filter((record) => matchesClinicalFilter({ ...record, site: profiles.find((profile) => profile.id === record.profileId)?.site || record.site }, clinicalFilter));
   const activeRecords = scopedRecords.filter((record) => !record.archivedAt);
   const archivedRecords = scopedRecords.filter((record) => Boolean(record.archivedAt));
   const reevaluationCount = activeRecords.filter((record) => record.status === "reevaluation").length;
@@ -401,7 +451,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
   async function refreshProfiles() {
     if (!can("children.view")) return;
-    const response = await fetch("/api/personnel-profiles");
+    const response = await clientRequest("/api/personnel-profiles");
     const data = await response.json() as { profiles?: PersonnelProfile[]; linkableAccounts?: LinkableAccount[]; error?: string };
     if (!response.ok) throw new Error(data.error || "No se pudieron cargar los niños.");
     setProfiles(data.profiles || []);
@@ -416,8 +466,21 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     }));
   }
 
+  function chooseSite(site: string) {
+    setSelectedSite(site);
+    const currentProfile = profiles.find((profile) => profile.id === selectedProfileId);
+    if (currentProfile && site !== "Todas" && currentProfile.site !== site) setSelectedProfileId("all");
+    setSelectedId(null); setScreen(null); setSelectedGraphProgramId(null);
+  }
+
+  function clearClinicalFilter() {
+    setSelectedSite("Todas"); setSelectedProfileId("all"); setSiteFilter("Todas");
+    setSelectedId(null); setScreen(null); setSelectedGraphProgramId(null);
+  }
+
   function chooseProfile(profileId: string) {
     setSelectedProfileId(profileId);
+    setSelectedGraphProgramId(null);
     const profile = profiles.find((item) => item.id === profileId);
     if (profile) setSelectedSite(profile.site);
     setSelectedId(null);
@@ -426,13 +489,13 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
   useEffect(() => {
     Promise.all([
-      canViewChildren ? fetch("/api/personnel-profiles").then(async (response) => {
+      canViewChildren ? clientRequest("/api/personnel-profiles").then(async (response) => {
         const data = await response.json() as { profiles?: PersonnelProfile[]; linkableAccounts?: LinkableAccount[]; error?: string };
         if (!response.ok) throw new Error(data.error || "No se pudieron cargar los niños.");
         setProfiles(data.profiles || []);
         setLinkableAccounts(data.linkableAccounts || []);
       }) : Promise.resolve(),
-      canViewEvaluations ? fetch("/api/training-cycles").then(async (response) => {
+      canViewEvaluations ? clientRequest("/api/training-cycles").then(async (response) => {
         const data = await response.json() as { records?: Record<string, unknown>[]; error?: string };
         if (!response.ok) throw new Error(data.error || "No se pudieron cargar los ciclos.");
         setRecords((data.records || []).map(normalizeCycle));
@@ -444,7 +507,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
   useEffect(() => {
     if (!canViewEvaluations && !can("packages.manage")) return;
-    fetch("/api/evaluation-packages")
+    clientRequest("/api/evaluation-packages")
       .then(async (response) => {
         const data = await response.json() as { packages?: EvaluationPackageDefinition[]; error?: string };
         if (!response.ok) throw new Error(data.error || "No se pudieron cargar los paquetes.");
@@ -457,7 +520,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   }, []);
 
   useEffect(() => {
-    fetch("/api/settings")
+    clientRequest("/api/settings")
       .then(async (response) => {
         const data = await response.json() as { settings?: AppSettings; error?: string };
         if (!response.ok || !data.settings) throw new Error(data.error || "No se pudo cargar la personalización.");
@@ -465,24 +528,24 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
         setPageNameDraft(data.settings.pageName);
       })
       .catch((error: Error) => flash(error.message));
-  }, []);
+  }, [flash]);
 
   useEffect(() => {
-    fetch("/api/sites", { cache: "no-store" })
+    clientRequest("/api/sites", { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json() as { sites?: SiteRow[]; error?: string };
         if (!response.ok) throw new Error(data.error || "No se pudieron cargar las sedes.");
         if (data.sites?.length) setSites(data.sites);
       })
       .catch((error: Error) => flash(error.message));
-  }, []);
+  }, [flash]);
 
   useEffect(() => {
     document.title = settings.pageName;
   }, [settings.pageName]);
 
   useEffect(() => {
-    fetch(`/api/profile-photos?subjectType=account&subjectId=${encodeURIComponent(account.id)}`, { cache: "no-store" })
+    clientRequest(`/api/profile-photos?subjectType=account&subjectId=${encodeURIComponent(account.id)}`, { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json() as { photoUrl?: string | null; error?: string };
         if (!response.ok) throw new Error(data.error || "No se pudo cargar tu fotografía.");
@@ -493,7 +556,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
   useEffect(() => {
     if (active !== "Inicio" || screen || !canViewPrograms) return;
-    fetch("/api/intervention-programs")
+    clientRequest("/api/intervention-programs")
       .then(async (response) => {
         const data = await response.json() as { programs?: DashboardProgram[]; sessions?: DashboardSession[]; error?: string };
         if (!response.ok) throw new Error(data.error || "No se pudo actualizar el panorama.");
@@ -504,15 +567,6 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   // Account permissions are immutable for the lifetime of this mounted session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, screen]);
-
-  function flash(text: string) {
-    const normalized = text.replace(/\s+/g, " ").trim();
-    const safeMessage = /failed query|too many sql variables|too many variables|TEST-TARGET/i.test(normalized) || normalized.length > 280
-      ? "No se pudo completar la carga. Intenta nuevamente."
-      : normalized;
-    setMessage(safeMessage);
-    window.setTimeout(() => setMessage(""), 3200);
-  }
 
   async function changeAccountPhoto(file: File) {
     setAccountPhotoUploading(true);
@@ -532,7 +586,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   async function persist(next: TrainingCycle, success = "Cambios guardados.") {
     setSaving(true);
     try {
-      const response = await fetch("/api/training-cycles", {
+      const response = await clientRequest("/api/training-cycles", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(next),
@@ -556,7 +610,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     }
     setSaving(true);
     try {
-      const response = await fetch("/api/training-cycles", {
+      const response = await clientRequest("/api/training-cycles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...form, cycleLabel: `Ciclo iniciado ${new Date().toLocaleDateString("es-NI")}` }),
@@ -619,7 +673,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     if (!deleteTarget || deleteText.trim().toUpperCase() !== "ELIMINAR") return;
     setSaving(true);
     try {
-      const response = await fetch("/api/training-cycles", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: deleteTarget.id }) });
+      const response = await clientRequest("/api/training-cycles", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: deleteTarget.id }) });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "No se pudo eliminar.");
       setRecords((current) => current.filter((record) => record.id !== deleteTarget.id));
@@ -635,7 +689,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     setHistory([]);
     setHistoryLoading(true);
     try {
-      const response = await fetch(`/api/training-cycles?historyFor=${encodeURIComponent(record.id)}`);
+      const response = await clientRequest(`/api/training-cycles?historyFor=${encodeURIComponent(record.id)}`);
       const data = await response.json() as { history?: HistoryEntry[]; error?: string };
       if (!response.ok) throw new Error(data.error || "No se pudo cargar el historial.");
       setHistory(data.history || []);
@@ -647,7 +701,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     if (!archiveTarget || !improvementConfirmed) return;
     setSaving(true);
     try {
-      const response = await fetch("/api/training-cycles", {
+      const response = await clientRequest("/api/training-cycles", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: archiveTarget.id, action: "archive", improvementConfirmed: true }),
@@ -669,7 +723,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   async function restoreCycle(record: TrainingCycle) {
     setSaving(true);
     try {
-      const response = await fetch("/api/training-cycles", {
+      const response = await clientRequest("/api/training-cycles", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: record.id, action: "restore" }),
@@ -685,7 +739,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   async function saveSettings() {
     setSaving(true);
     try {
-      const response = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageName: pageNameDraft }) });
+      const response = await clientRequest("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageName: pageNameDraft }) });
       const data = await response.json() as { settings?: AppSettings; error?: string };
       if (!response.ok || !data.settings) throw new Error(data.error || "No se pudo guardar el nombre.");
       setSettings(data.settings);
@@ -702,7 +756,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
       const body = new FormData();
       body.append("kind", kind);
       body.append("file", file);
-      const response = await fetch("/api/settings", { method: "POST", body });
+      const response = await clientRequest("/api/settings", { method: "POST", body });
       const data = await response.json() as { settings?: AppSettings; error?: string };
       if (!response.ok || !data.settings) throw new Error(data.error || "No se pudo subir la imagen.");
       setSettings(data.settings);
@@ -797,11 +851,16 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   }
 
   function renderOverview() {
-    const scopedPrograms = dashboardPrograms.filter((program) => program.status === "active" && (selectedProfileId !== "all" ? program.profileId === selectedProfileId : selectedSite === "Todas" || program.site === selectedSite));
-    const scopedProgramIds = new Set(scopedPrograms.map((program) => program.id));
+    const scopedAllPrograms = dashboardPrograms.filter((program) => matchesClinicalFilter({ ...program, site: profiles.find((profile) => profile.id === program.profileId)?.site || program.site }, clinicalFilter));
+    const scopedPrograms = scopedAllPrograms.filter((program) => program.status === "active");
+    const scopedProgramIds = new Set(scopedAllPrograms.map((program) => program.id));
     const scopedSessions = dashboardSessions.filter((session) => scopedProgramIds.has(session.programId));
+    const recentSessionGroups = summarizeClosedSessions(scopedSessions).groups;
+    // Exact totals come from the same uncapped counts as the child directory.
+    const sessionCount = clinicalProfiles.reduce((sum, profile) => sum + (profile.sessionCount || 0), 0);
+    const programRecordCount = clinicalProfiles.reduce((sum, profile) => sum + (profile.programRecordCount || 0), 0);
     const openTargets = scopedPrograms.flatMap((program) => program.targets).filter((target) => target.state !== "closed").length;
-    const activeChildren = profiles.filter((profile) => profile.status === "active" && (selectedSite === "Todas" || profile.site === selectedSite));
+    const activeChildren = clinicalProfiles.filter((profile) => profile.status === "active");
     const activeSites = activeSiteNames.length;
     const evaluationTasks = canManageEvaluations ? [
       ...activeRecords.filter((record) => record.status === "reevaluation").map((record) => ({ id: `re-${record.id}`, tone: "violet", label: "Cerrar reevaluación", detail: `${record.participantName} · ${record.programContext}`, action: () => openRecord(record, "reevaluation") })),
@@ -811,7 +870,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     const tasks = evaluationTasks.slice(0, 6);
     const recentActivity = [
       ...activeRecords.map((record) => ({ id: `cycle-${record.id}`, date: record.updatedAt, icon: ClipboardCheck, title: statusLabel(record.status), detail: `${record.participantName} · ${record.programContext}` })),
-      ...scopedSessions.map((session) => { const program = scopedPrograms.find((item) => item.id === session.programId); return { id: `session-${session.id}`, date: session.createdAt || session.sessionDate, icon: Clock3, title: "Sesión cerrada", detail: `${program?.participantName || "Niño"} · ${program?.name || session.context}` }; }),
+      ...recentSessionGroups.map((group) => { const session = group.rows[0]; const program = scopedAllPrograms.find((item) => item.id === session.programId); return { id: `session-${group.id}`, date: session.createdAt || session.sessionDate, icon: Clock3, title: "Sesión cerrada", detail: `${program?.participantName || "Niño"} · ${group.rows.length} registro${group.rows.length === 1 ? "" : "s"} por programa` }; }),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5);
     const contextName = selectedProfile ? selectedProfile.fullName : selectedSite !== "Todas" ? `Sede ${selectedSite}` : "Vista institucional";
     const contextDetail = selectedProfile ? `Niño · ${selectedProfile.site}` : selectedSite !== "Todas" ? `${profiles.filter((profile) => profile.site === selectedSite && profile.status === "active").length} niños activos` : activeSiteNames.join(" · ") || "Sin sedes activas";
@@ -828,7 +887,7 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
       <section className="cie-stat-grid" aria-label="Indicadores principales">
         <article className="blue"><span><UsersRound size={23}/></span><div><small>Niños activos</small><strong>{activeChildren.length}</strong><p>Expedientes visibles</p></div></article>
         <article className="yellow"><span><BookOpenCheck size={23}/></span><div><small>Programas</small><strong>{scopedPrograms.length}</strong><p>En intervención</p></div></article>
-        <article className="red"><span><Clock3 size={23}/></span><div><small>Sesiones</small><strong>{scopedSessions.length}</strong><p>En la selección</p></div></article>
+        <article className="red"><span><Clock3 size={23}/></span><div><small>Sesiones cerradas</small><strong>{sessionCount}</strong><p>{programRecordCount} registros por programa</p></div></article>
         <article className="blue-soft"><span><Target size={23}/></span><div><small>Targets abiertos</small><strong>{openTargets}</strong><p>Pendientes de cierre</p></div></article>
         <article className="yellow-soft"><span><ClipboardCheck size={23}/></span><div><small>Evaluaciones</small><strong>{activeRecords.length}</strong><p>{reevaluationCount} en reevaluación</p></div></article>
         <article className="red-soft"><span><Building2 size={23}/></span><div><small>Sedes activas</small><strong>{activeSites}</strong><p>Directorio institucional</p></div></article>
@@ -852,13 +911,13 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
 
       {(can("calendar.view") || can("calendar.manage")) && <CalendarManager
         compact
+        selectedSite={selectedSite}
+        selectedProfileId={selectedProfileId}
+        key={todaySessionRevision}
         profiles={profiles}
         notify={flash}
         onOpenSession={(appointment: CalendarAppointment) => {
-          chooseProfile(appointment.profileId);
-          setAppointmentToOpen(appointment);
-          setSessionHistoryOnly(false);
-          setActive("Sesiones");
+          if (canRecordSessions) setTodaySession({ profileId: appointment.profileId, profileName: appointment.profileName, appointmentId: appointment.id });
         }}
       />}
     </div>;
@@ -1028,14 +1087,14 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
     : screen === "comparison" ? renderComparison()
     : active === "Inicio" ? renderOverview()
     : active === "Formación" ? <FormationManager notify={flash}/>
-    : active === "Calendario" ? <CalendarManager profiles={profiles} notify={flash} onOpenSession={openScheduledSession}/>
+    : active === "Calendario" ? <CalendarManager selectedSite={selectedSite} selectedProfileId={selectedProfileId} profiles={profiles} notify={flash} onOpenSession={openScheduledSession}/>
     : active === "Reunión" ? <MeetingManager notify={flash}/>
-    : active === "Niños" ? <PersonnelProfileManager profiles={profiles} sites={activeSiteNames} linkableAccounts={linkableAccounts} canManage={canManageChildren} selectedProfileId={selectedProfileId} onSelect={chooseProfile} onProfilesChange={handleProfilesChange} onOpenPrograms={() => setActive("Programas")} onOpenEvaluations={() => setActive("Evaluaciones")} onOpenSessions={() => { setSessionHistoryOnly(true); setAppointmentToOpen(null); setActive("Sesiones"); }} onOpenGraphs={() => { setSelectedGraphProgramId(null); setActive("Gráficas"); }} onOpenProgramGraph={openProgramGraph} onOpenABC={openABC} onOpenReports={() => setActive("Informes")} notify={flash}/>
-    : active === "Programas" ? <InterventionSessionManager mode="programs" cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} onOpenProgramGraph={openProgramGraph}/>
-    : active === "Sesiones" ? <InterventionSessionManager mode="sessions" cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} canManageSessionNoteTemplates={account.role === "direccion_clinica"} initialAppointment={appointmentToOpen} onAppointmentConsumed={consumeAppointment} allowAdHocSessions={account.role !== "terapeuta"} historyOnly={sessionHistoryOnly} onRegisterABC={canRecordABC ? setAbcQuickContext : undefined}/>
-    : active === "Gráficas" ? <GraphManager cycles={records} profiles={profiles} selectedProfileId={selectedProfileId} initialProgramId={selectedGraphProgramId} notify={flash} canManage={canManageGraphs}/>
+    : active === "Niños" ? <PersonnelProfileManager selectedSite={selectedSite} onSelectSite={chooseSite} onStartTodaySession={canRecordSessions ? (profileId) => { const profile = profiles.find((item) => item.id === profileId); if (profile?.status === "active") setTodaySession({ profileId, profileName: profile.fullName }); } : undefined} profiles={profiles} sites={activeSiteNames} linkableAccounts={linkableAccounts} canManage={canManageChildren} selectedProfileId={selectedProfileId} onSelect={chooseProfile} onProfilesChange={handleProfilesChange} onOpenPrograms={() => setActive("Programas")} onOpenEvaluations={() => setActive("Evaluaciones")} onOpenSessions={() => { setSessionHistoryOnly(true); setAppointmentToOpen(null); setActive("Sesiones"); }} onOpenGraphs={() => { setSelectedGraphProgramId(null); setActive("Gráficas"); }} onOpenProgramGraph={openProgramGraph} onOpenABC={openABC} onOpenReports={() => setActive("Informes")} notify={flash}/>
+    : active === "Programas" ? <InterventionSessionManager mode="programs" cycles={scopedRecords} profiles={clinicalProfiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} onOpenProgramGraph={openProgramGraph} onBackToProfile={selectedProfileId !== "all" ? () => { setActive("Niños"); setScreen(null); } : undefined} draftOwnerId={account.id}/>
+    : active === "Sesiones" ? <InterventionSessionManager mode="sessions" cycles={scopedRecords} profiles={clinicalProfiles} selectedProfileId={selectedProfileId} selectedSite={selectedSite} onSelectProfile={chooseProfile} onProfilesRefresh={() => refreshProfiles().catch((error: Error) => flash(error.message))} notify={flash} canManagePrograms={canManagePrograms} canRecordSessions={canRecordSessions} canManageSessions={canManageSessions} canManageSessionNoteTemplates={account.role === "direccion_clinica"} initialAppointment={appointmentToOpen} onAppointmentConsumed={consumeAppointment} allowAdHocSessions={account.role !== "terapeuta"} historyOnly={sessionHistoryOnly} onRegisterABC={canRecordABC ? setAbcQuickContext : undefined} draftOwnerId={account.id}/>
+    : active === "Gráficas" ? <GraphManager cycles={scopedRecords} profiles={clinicalProfiles} selectedProfileId={selectedProfileId} initialProgramId={selectedGraphProgramId} notify={flash} canManage={canManageGraphs} onOpenABC={canUseABC && selectedProfileId !== "all" ? openABC : undefined} onBackToProfile={selectedProfileId !== "all" ? () => { setActive("Niños"); setScreen(null); } : undefined}/>
     : active === "Registro ABC" && selectedProfile && canUseABC ? <ABCManager profileId={selectedProfile.id} profileName={selectedProfile.fullName} notify={flash}/>
-    : active === "Informes" ? <ReportManager profiles={profiles} selectedProfileId={selectedProfileId} onSelectProfile={chooseProfile} canManage={canManageReports} brandName={settings.pageName} logoUrl={settings.institutionPhotoUrl || settings.platformPhotoUrl} accountName={account.displayName} notify={flash}/>
+    : active === "Informes" ? <ReportManager profiles={clinicalProfiles} selectedProfileId={selectedProfileId} onSelectProfile={chooseProfile} canManage={canManageReports} brandName={settings.pageName} logoUrl={settings.institutionPhotoUrl || settings.platformPhotoUrl} accountName={account.displayName} notify={flash}/>
     : active === "Paquetes" ? <PackageManager packages={evaluationPackages} onPackagesChange={setEvaluationPackages} notify={flash}/>
     : active === "Equipo" ? <TeamProfileDirectory viewerRole={account.role} canOpenChildren={canViewChildren} onOpenChild={(profileId) => { chooseProfile(profileId); setActive("Niños"); }} notify={flash}/>
     : active === "Cuentas" ? <AccountManager profiles={profiles} sites={activeSiteNames} currentRole={account.role} notify={flash}/>
@@ -1046,25 +1105,26 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
   const selectedFormPackage = editingRecord?.instrumentSnapshot || activePackages.find((pack) => pack.id === form.packageTemplateId) || activePackages[0] || DEFAULT_EVALUATION_PACKAGE;
   const selectedFormHasRoutes = selectedFormPackage.areas.some((area) => area.route === "4A" || area.route === "4B");
   const formProfile = profiles.find((profile) => profile.id === form.profileId) || null;
-  const selectorProfiles = profiles.filter((profile) => profile.status === "active" && (selectedSite === "Todas" || profile.site === selectedSite));
+
 
   return <div className="formation-shell"><a className="skip-link" href="#main-content">Saltar al contenido principal</a>
     {menuOpen && <button className="formation-scrim" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
-    <aside className={`formation-sidebar ${menuOpen ? "is-open" : ""}`}>
+    <aside id="platform-navigation" ref={menuRef} className={`formation-sidebar ${menuOpen ? "is-open" : ""}`}>
       <div className="formation-brand"><span>{settings.platformPhotoUrl ? <img src={settings.platformPhotoUrl} alt="" /> : <Sparkles size={20} />}</span><div><strong>{settings.pageName}</strong><small>Plataforma clínica CIE</small></div><button className="mobile-close" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)}><X size={19} /></button></div>
       <p className="nav-kicker">Navegación</p>
       <nav aria-label="Navegación principal">{visibleNav.map(([label, Icon]) => <button key={label} title={label} aria-current={active === label && !screen ? "page" : undefined} className={`formation-nav ${active === label && !screen ? "active" : ""}`} onClick={() => { if (label === "Portal de formación") { window.location.assign("/formacion"); return; } setActive(label); setScreen(null); setMenuOpen(false); }}><Icon size={20} /><span>{label}</span></button>)}</nav>
       <div className="sidebar-spacer" /><button className={`formation-nav ${active === "Configuración" && !screen ? "active" : ""}`} onClick={() => { setActive("Configuración"); setScreen(null); setMenuOpen(false); }}><Settings size={18} /><span>Configuración</span></button><div className="signed-user"><ProfilePhoto name={account.displayName} src={accountPhotoUrl} avatarClassName="signed-user-avatar" editable uploading={accountPhotoUploading} onFile={changeAccountPhoto} label="Cambiar mi fotografía"/><div><strong>{account.displayName}</strong><small>{roleLabel(account.role)}</small></div><button aria-label="Cerrar sesión" title="Cerrar sesión" onClick={signOut}><LogOut size={15}/></button></div>
     </aside>
-    <section className="formation-workspace"><header className="formation-topbar">
-      <button className="mobile-menu" aria-label="Abrir menú" onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
+    <section className="formation-workspace" inert={menuOpen}><header className="formation-topbar">
+      <button className="mobile-menu" aria-label="Abrir menú" aria-expanded={menuOpen} aria-controls="platform-navigation" onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
       <div className="topbar-context"><span>{settings.pageName}</span><strong>{active}</strong></div>
-      {canViewChildren && <div className="topbar-profile-filters" aria-label="Contexto clínico"><Search size={16}/><label><span className="sr-only">Sede</span><select value={selectedSite} onChange={(event) => { const next = event.target.value; setSelectedSite(next); if (selectedProfile && next !== "Todas" && selectedProfile.site !== next) setSelectedProfileId("all"); setScreen(null); }}><option value="Todas">Todas las sedes</option>{activeSiteNames.map((site) => <option value={site} key={site}>{site}</option>)}</select></label><label><span className="sr-only">Niño</span><select value={selectorProfiles.some((profile) => profile.id === selectedProfileId) ? selectedProfileId : "all"} onChange={(event) => chooseProfile(event.target.value)}><option value="all">{selectedSite === "Todas" ? "Todos los niños" : `Todos · ${selectedSite}`}</option>{selectorProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.fullName}</option>)}</select></label></div>}
+
       <div className="topbar-actions"><span className="topbar-date"><CalendarDays size={15}/>{new Date().toLocaleDateString("es-NI", { day: "2-digit", month: "short" })}</span>{selectedProfile && canRecordABC && <button className="topbar-abc" title={`Registrar ABC · ${selectedProfile.fullName}`} aria-label={`Registrar ABC para ${selectedProfile.fullName}`} onClick={() => setAbcQuickContext({ profileId: selectedProfile.id, profileName: selectedProfile.fullName })}><ListTree size={18}/><span>ABC</span></button>}{(can("calendar.view") || can("calendar.manage")) && <button title="Calendario" aria-label="Abrir calendario" onClick={() => { setActive("Calendario"); setScreen(null); }}><CalendarDays size={18}/></button>}<button title="CIE Nexus Formación" aria-label="Abrir CIE Nexus Formación" onClick={() => window.location.assign("/formacion")}><CircleHelp size={19}/></button><button className="topbar-avatar-button" title={account.displayName} aria-label={`Configuración de ${account.displayName}`} onClick={() => { setActive("Configuración"); setScreen(null); }}><ProfilePhoto name={account.displayName} src={accountPhotoUrl} avatarClassName="topbar-avatar"/></button></div>
-    </header><main id="main-content" tabIndex={-1} className={`formation-content ${screen ? "work-mode" : ""}`}>{mainContent}</main></section>
-    {message && <div className="formation-toast" role="status" aria-live="polite"><CheckCircle2 size={17} /> {message}</div>}
+    </header><main id="main-content" tabIndex={-1} className={`formation-content ${screen ? "work-mode" : ""}`}>{canViewChildren && !(active === "Niños" && selectedProfile && !screen) && (screen || ["Inicio", "Calendario", "Niños", "Programas", "Sesiones", "Gráficas", "Registro ABC", "Informes", "Evaluaciones", "Enseñanza", "Reevaluaciones", "Comparación", "Archivo"].includes(active)) && <ClinicalScopeControls profiles={profiles} sites={activeSiteNames} filter={clinicalFilter} onSiteChange={chooseSite} onProfileChange={chooseProfile} onClear={clearClinicalFilter}/>} {mainContent}</main></section>
+    {todaySession && canRecordSessions && <TodaySessionLauncher key={`${todaySession.profileId}:${todaySession.appointmentId || "today"}`} {...todaySession} notify={flash} onExit={() => setTodaySession(null)} onFinished={() => { setTodaySessionRevision((current) => current + 1); refreshProfiles().catch((error: Error) => flash(error.message)); }}/>}
+    <ToastNotice message={message}/>
     {abcQuickContext && <ABCQuickCapture context={abcQuickContext} onClose={() => setAbcQuickContext(null)} notify={flash}/>}
-    {newOpen && <div className="modal-backdrop"><section className="new-cycle-modal" role="dialog" aria-modal="true" aria-labelledby="new-cycle-title">
+    {newOpen && <ModalLayer onDismiss={() => { setNewOpen(false); setEditingId(null); }} className="modal-backdrop"><section className="new-cycle-modal" role="dialog" aria-modal="true" aria-labelledby="new-cycle-title">
       <div className="modal-title"><div><p className="section-kicker">{editingRecord ? "Gestión del expediente" : form.sourceCycleId ? "Continuidad longitudinal" : "Nueva línea base"}</p><h2 id="new-cycle-title">{editingRecord ? "Editar evaluación" : form.sourceCycleId ? "Iniciar nuevo ciclo" : "Iniciar evaluación"}</h2></div><button aria-label="Cerrar" onClick={() => { setNewOpen(false); setEditingId(null); }}><X size={19}/></button></div>
       <p className="modal-intro">{editingRecord ? "Actualiza los datos administrativos. El paquete, la versión, las puntuaciones y las evidencias se conservarán." : form.sourceCycleId ? "Los datos generales se copiaron del ciclo archivado. Selecciona el paquete que funcionará como nueva línea base." : "Selecciona un paquete publicado. El sistema guardará una copia de esa versión para utilizarla nuevamente en la reevaluación."}</p>
       <div className="modal-form">
@@ -1074,9 +1134,9 @@ export default function TrainingSystem({ account }: { account: AppAccount }) {
         {selectedFormHasRoutes && <label className="field-wide"><span>Ruta de aplicación</span><div className="route-choice"><button type="button" disabled={Boolean(editingRecord)} aria-pressed={form.routeType === "4A"} className={form.routeType === "4A" ? "selected" : ""} onClick={() => setForm({ ...form, routeType: "4A" })}><strong>4A · Adquisición</strong><small>El programa enseña una habilidad.</small></button><button type="button" disabled={Boolean(editingRecord)} aria-pressed={form.routeType === "4B"} className={form.routeType === "4B" ? "selected" : ""} onClick={() => setForm({ ...form, routeType: "4B" })}><strong>4B · Conducta que interfiere</strong><small>El plan modifica riesgo o contingencias.</small></button></div></label>}
       </div>
       <div className="modal-foot"><span><FileCheck2 size={15}/> {editingRecord ? editingRecord.instrumentVersion : packageVersionLabel(selectedFormPackage)}</span><div><button className="secondary-formation-button" onClick={() => { setNewOpen(false); setEditingId(null); }}>Cancelar</button><button className="primary-formation-button" onClick={saveMetadata} disabled={saving || (!editingRecord && !activePackages.length)}>{saving ? <LoaderCircle className="spin" size={16}/> : editingRecord ? <Save size={16}/> : <ClipboardCheck size={16}/>} {editingRecord ? "Guardar cambios" : "Crear evaluación"}</button></div></div>
-    </section></div>}
-    {deleteTarget && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description"><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-title">Eliminar evaluación permanentemente</h2><p id="delete-description">Se eliminarán la línea base, el plan de enseñanza, la reevaluación y <strong>todo su historial de modificaciones</strong> de {deleteTarget.participantName}. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)} /></label><div><button className="secondary-formation-button" onClick={() => { setDeleteTarget(null); setDeleteText(""); }}>Cancelar</button><button className="danger-button" disabled={deleteText.trim().toUpperCase() !== "ELIMINAR" || saving} onClick={deleteCycle}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></div>}
-    {archiveTarget && <div className="modal-backdrop"><section className="archive-modal" role="dialog" aria-modal="true" aria-labelledby="archive-title"><div className="modal-title"><div><p className="section-kicker">Cierre longitudinal</p><h2 id="archive-title">Confirmar mejora y archivar</h2></div><button aria-label="Cerrar" onClick={() => { setArchiveTarget(null); setImprovementConfirmed(false); }}><X size={19}/></button></div><div className="archive-summary"><span><Archive size={22}/></span><div><strong>{archiveTarget.participantName}</strong><p>{archiveTarget.programContext} · Sede {archiveTarget.site}</p></div></div>{(() => { const summary = improvementSummary(archiveTarget); const total = targetsForPackage(archiveTarget.instrumentSnapshot, archiveTarget.routeType).length; return <><div className="archive-evidence"><div><small>Línea base</small><strong>{summary.before}/{total}</strong></div><ArrowRight size={18}/><div><small>Reevaluación</small><strong>{summary.after}/{total}</strong></div><span className="change-chip positive">+{summary.net}</span></div><p className="modal-intro">Archivar protege este ciclo contra cambios y lo mueve fuera de los listados activos. Después podrás iniciar una evaluación nueva con el paquete que elijas.</p></>; })()}<label className="confirm-check"><input type="checkbox" checked={improvementConfirmed} onChange={(event) => setImprovementConfirmed(event.target.checked)} /><span>Confirmo que revisé la comparación y que la mejora es clínicamente válida, no solo un cambio numérico.</span></label><div className="modal-actions"><button className="secondary-formation-button" onClick={() => { setArchiveTarget(null); setImprovementConfirmed(false); }}>Cancelar</button><button className="primary-formation-button" disabled={!improvementConfirmed || saving} onClick={archiveCycle}>{saving ? <LoaderCircle className="spin" size={16}/> : <Archive size={16}/>} Archivar ciclo</button></div></section></div>}
-    {historyTarget && <div className="modal-backdrop"><section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title"><div className="modal-title"><div><p className="section-kicker">Trazabilidad</p><h2 id="history-title">Historial de modificaciones</h2></div><button aria-label="Cerrar historial" onClick={() => setHistoryTarget(null)}><X size={19}/></button></div><p className="modal-intro"><strong>{historyTarget.participantName}</strong> · {historyTarget.programContext}. Este historial pertenece a la evaluación y se eliminará automáticamente si eliminas el expediente.</p><div className="history-timeline">{historyLoading ? <div className="empty-state"><LoaderCircle className="spin" size={24}/><strong>Cargando historial…</strong></div> : history.length ? history.map((entry) => <article key={entry.id}><span><Clock3 size={15}/></span><div><strong>{entry.summary}</strong>{entry.details && <p>{entry.details}</p>}<small>{new Date(entry.createdAt).toLocaleString("es-NI", { dateStyle: "medium", timeStyle: "short" })}</small></div></article>) : <div className="empty-state"><CircleDashed size={26}/><strong>Sin modificaciones registradas</strong></div>}</div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setHistoryTarget(null)}>Cerrar</button></div></section></div>}
+    </section></ModalLayer>}
+    {deleteTarget && <ModalLayer onDismiss={() => { setDeleteTarget(null); setDeleteText(""); }} className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description"><span className="danger-mark"><Trash2 size={23}/></span><h2 id="delete-title">Eliminar evaluación permanentemente</h2><p id="delete-description">Se eliminarán la línea base, el plan de enseñanza, la reevaluación y <strong>todo su historial de modificaciones</strong> de {deleteTarget.participantName}. Esta acción no se puede deshacer.</p><label><span>Escribe ELIMINAR para confirmar</span><input autoFocus value={deleteText} onChange={(event) => setDeleteText(event.target.value)} /></label><div><button className="secondary-formation-button" onClick={() => { setDeleteTarget(null); setDeleteText(""); }}>Cancelar</button><button className="danger-button" disabled={deleteText.trim().toUpperCase() !== "ELIMINAR" || saving} onClick={deleteCycle}><Trash2 size={16}/> Eliminar permanentemente</button></div></section></ModalLayer>}
+    {archiveTarget && <ModalLayer onDismiss={() => { setArchiveTarget(null); setImprovementConfirmed(false); }} className="modal-backdrop"><section className="archive-modal" role="dialog" aria-modal="true" aria-labelledby="archive-title"><div className="modal-title"><div><p className="section-kicker">Cierre longitudinal</p><h2 id="archive-title">Confirmar mejora y archivar</h2></div><button aria-label="Cerrar" onClick={() => { setArchiveTarget(null); setImprovementConfirmed(false); }}><X size={19}/></button></div><div className="archive-summary"><span><Archive size={22}/></span><div><strong>{archiveTarget.participantName}</strong><p>{archiveTarget.programContext} · Sede {archiveTarget.site}</p></div></div>{(() => { const summary = improvementSummary(archiveTarget); const total = targetsForPackage(archiveTarget.instrumentSnapshot, archiveTarget.routeType).length; return <><div className="archive-evidence"><div><small>Línea base</small><strong>{summary.before}/{total}</strong></div><ArrowRight size={18}/><div><small>Reevaluación</small><strong>{summary.after}/{total}</strong></div><span className="change-chip positive">+{summary.net}</span></div><p className="modal-intro">Archivar protege este ciclo contra cambios y lo mueve fuera de los listados activos. Después podrás iniciar una evaluación nueva con el paquete que elijas.</p></>; })()}<label className="confirm-check"><input type="checkbox" checked={improvementConfirmed} onChange={(event) => setImprovementConfirmed(event.target.checked)} /><span>Confirmo que revisé la comparación y que la mejora es clínicamente válida, no solo un cambio numérico.</span></label><div className="modal-actions"><button className="secondary-formation-button" onClick={() => { setArchiveTarget(null); setImprovementConfirmed(false); }}>Cancelar</button><button className="primary-formation-button" disabled={!improvementConfirmed || saving} onClick={archiveCycle}>{saving ? <LoaderCircle className="spin" size={16}/> : <Archive size={16}/>} Archivar ciclo</button></div></section></ModalLayer>}
+    {historyTarget && <ModalLayer onDismiss={() => setHistoryTarget(null)} className="modal-backdrop"><section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title"><div className="modal-title"><div><p className="section-kicker">Trazabilidad</p><h2 id="history-title">Historial de modificaciones</h2></div><button aria-label="Cerrar historial" onClick={() => setHistoryTarget(null)}><X size={19}/></button></div><p className="modal-intro"><strong>{historyTarget.participantName}</strong> · {historyTarget.programContext}. Este historial pertenece a la evaluación y se eliminará automáticamente si eliminas el expediente.</p><div className="history-timeline">{historyLoading ? <div className="empty-state"><LoaderCircle className="spin" size={24}/><strong>Cargando historial…</strong></div> : history.length ? history.map((entry) => <article key={entry.id}><span><Clock3 size={15}/></span><div><strong>{entry.summary}</strong>{entry.details && <p>{entry.details}</p>}<small>{new Date(entry.createdAt).toLocaleString("es-NI", { dateStyle: "medium", timeStyle: "short" })}</small></div></article>) : <div className="empty-state"><CircleDashed size={26}/><strong>Sin modificaciones registradas</strong></div>}</div><div className="modal-actions"><button className="secondary-formation-button" onClick={() => setHistoryTarget(null)}>Cerrar</button></div></section></ModalLayer>}
   </div>;
 }

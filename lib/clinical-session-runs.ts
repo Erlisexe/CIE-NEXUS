@@ -17,3 +17,11 @@ export function groupProgramSessions<T extends { id: string; clinicalSessionRunI
     return groups;
   }, new Map<string, T[]>()).entries()).map(([id, rows]) => ({ id, rows }));
 }
+
+// A session is one closed encounter. Legacy records without a run keep their
+// own identity: sharing a date or professional never proves they were one visit.
+export function summarizeClosedSessions<T extends { id: string; clinicalSessionRunId?: string | null; status: string }>(sessions: T[]) {
+  const records = sessions.filter((session) => session.status === "closed");
+  const groups = groupProgramSessions(records);
+  return { groups, sessionCount: groups.length, programRecordCount: records.length };
+}
